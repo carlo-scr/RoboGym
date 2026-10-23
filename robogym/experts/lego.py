@@ -83,7 +83,7 @@ class LegoExpert(Expert):
         n = sc["n"]
         top = env.cfg.bench.top_z
         H = task.H
-        for k in range(n):
+        for k in self.my_subgoals(range(n)):
             self.subgoal = k
             pr = env.privileged()
             bp, bq = pr["brick_pos"][k], pr["brick_quat"][k]
@@ -119,6 +119,9 @@ class LegoExpert(Expert):
             rel = self.object_in_hand(pr["brick_pos"][k], pr["brick_quat"][k])
             z_carry = max(struct_top, gp[2] + H / 2) + 0.05 + H / 2
             yield from self.move(self.tp + [0, 0, max(0.0, z_carry - pr["brick_pos"][k][2])], speed=0.2, min_T=0.4, phase="lift")
+            yield from self.wait_turn(k)  # bimanual: bricks go on in build order, one arm at the plate at a time
+            struct_top = top + task.tc.plate_h + (max(task._occ) + 1 if task._occ else 0) * H
+            z_carry = max(struct_top, gp[2] + H / 2) + 0.05 + H / 2
             above_p, above_q = self.tcp_for_object_pose(gp + [0, 0, z_carry - gp[2]], gq, rel)
             yield from self.carry(above_p, above_q, speed=0.25, min_T=0.8)
             # align just above the studs, closed loop on the measured brick pose
@@ -157,5 +160,7 @@ class LegoExpert(Expert):
                 self.event("snap")
             yield from self.release()
             yield from self.move(self.tp + [0, 0, 0.07], speed=0.25, min_T=0.4, phase="retreat")
+            yield from self.clear_zone()
+            self.turn_done(k)
         self.subgoal = n
         yield from self.go_home()

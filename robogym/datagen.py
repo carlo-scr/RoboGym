@@ -113,8 +113,10 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
     frames = {c: [] for c in cameras}
     phys, aux, act64 = [], [], []
     stage_times, drops, drop_times = {}, 0, []
-    held_k, ungrasped_n = -1, 0
-    i_arm = ex.i_arm
+    ex_arms = tuple(getattr(ex, "arms", (ex.arm,)))
+    held_k = {a: -1 for a in ex_arms}
+    ungrasped_n = {a: 0 for a in ex_arms}
+    holding_of = getattr(ex, "holding_of", lambda a: ex.holding)
     while not ex.done and env.time < max_s and not env.unstable:
         obs = env.observe()
         for c in cameras:
@@ -131,10 +133,11 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
         elif spec.dart > 0 and phase in DART_PHASES:
             # DART (Laskey et al. 2017): execute a perturbed action, record the expert's clean action as the label.
             rng_d = np.random.default_rng((spec.seed * 1000003 + env.step_count) % (1 << 32))
-            i = ACT_DIM * i_arm
             a = a_exp.copy()
-            a[i : i + 3] += rng_d.normal(0, spec.dart, 3)
-            a[i + 3 : i + 6] += rng_d.normal(0, 4 * spec.dart, 3)
+            for arm in ex_arms:
+                i = ACT_DIM * env.arms.index(arm)
+                a[i : i + 3] += rng_d.normal(0, spec.dart, 3)
+                a[i + 3 : i + 6] += rng_d.normal(0, 4 * spec.dart, 3)
             a = env.clip_action(a)
         if save_states:
             st = env.get_state()  # after the expert acted (it may switch modes), right before stepping
@@ -155,27 +158,32 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
         for k2, v in getattr(task, "record_columns", lambda e, p: {})(env, pr).items():
             extra.setdefault(k2, []).append(v)
         stage_times.setdefault(info["stage_name"], round(env.time, 4))
-        # which task object the expert's arm holds (-1: none)
-        gk = -1
+        # which task object each expert arm holds (-1: none); drop = an arm loses an object while its
+        # expert still intends to hold it (outside the release / retreat phases)
+        gks = {a: -1 for a in ex_arms}
         for j, g in enumerate(pr["grasped"]):
-            if g == ex.arm:
-                gk = j
-        rec["grasped_k"].append(gk)
-        # drop detection: the arm loses an object while the expert still commands a closed gripper
-        if gk >= 0:
-            held_k, ungrasped_n = gk, 0
-        elif held_k >= 0 and ex.holding and phase not in ("release", "retreat", "home", "done"):
-            ungrasped_n += 1
-            if ungrasped_n == 3:
-                drops += 1
-                drop_times.append(round(env.time - 2 * env.dt, 4))
-                held_k = -1
-        elif not ex.holding:
-            held_k, ungrasped_n = -1, 0
+            if g in gks:
+                gks[g] = j
+        rec["grasped_k"].append(gks[ex_arms[0]])
+        if len(ex_arms) > 1:
+            extra.setdefault("grasped_k_left", []).append(gks[ex_arms[1]])
+        for a_ in ex_arms:
+            ph = phase.split(f"{a_[0]}:")[-1].split("|")[0] if "|" in phase else phase
+            if gks[a_] >= 0:
+                held_k[a_], ungrasped_n[a_] = gks[a_], 0
+            elif held_k[a_] >= 0 and holding_of(a_) and ph not in ("release", "retreat", "clear", "home", "done", "wait"):
+                ungrasped_n[a_] += 1
+                if ungrasped_n[a_] == 3:
+                    drops += 1
+                    drop_times.append(round(env.time - 2 * env.dt, 4))
+                    held_k[a_] = -1
+            elif not holding_of(a_):
+                held_k[a_], ungrasped_n[a_] = -1, 0
         env.step(a)
     pr = env.privileged()
     info = env.info(pr)
-    record = dict(grasped_k=rec["grasped_k"], drops=drops, drop_times=drop_times, n_seated=extra.get("n_seated", []),
+    grasped_all = rec["grasped_k"] + extra.get("grasped_k_left", [])
+    record = dict(grasped_k=grasped_all, drops=drops, drop_times=drop_times, n_seated=extra.get("n_seated", []),
                   max_depth={int(k2.split("_")[-1]): float(np.max(v)) for k2, v in extra.items() if k2.startswith("depth_")} if extra else {})
     mode = task.outcome(env, record, ex)
     success = mode == "none"
@@ -195,7 +203,7 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
         goal=task.goal_description(sc.task),
         final_progress=float(info["progress"]),
         final_stage=info["stage_name"],
-        active_arm=ex.arm,
+        active_arm=ex.arm,  # "both" for the bimanual expert
         retries=int(ex.retries),
         drops=drops,
         drop_times_s=drop_times,

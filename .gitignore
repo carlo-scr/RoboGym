@@ -11,3 +11,4 @@ robogym/assets/_generated/
 MUJOCO_LOG.TXT
 *.zip
 .DS_Store
+notes/

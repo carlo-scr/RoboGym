@@ -146,7 +146,8 @@ class CablePlug(Task):
         assets.append('<material name="panel" rgba="0.08 0.08 0.09 1" specular="0.3"/><material name="plugbody" rgba="0.85 0.9 0.95 0.85" specular="0.6"/>')
         sw = T.switch_front(8, 0)
         assets.append(f'<texture name="switchtex" type="2d" file="{sw}"/><material name="switchtex" texture="switchtex" specular="0.3"/>')
-        out = [f'<body name="panel" pos="{tc.face_x} 0 {self.cfg.bench.top_z + tc.row_z}">{panel}</body>']
+        face_x = tc.face_x - (0.08 if self.cfg.robot.n_arms == 2 else 0.0)  # two side-mounted arms: panel within reach
+        out = [f'<body name="panel" pos="{face_x} 0 {self.cfg.bench.top_z + tc.row_z}">{panel}</body>']
         anchor_z = self.cfg.bench.top_z + tc.body_h / 2
         for c in range(tc.n_cables):
             out.append(f'<body name="switch{c}" pos="{tc.anchor_x} {(-1) ** c * tc.anchor_abs_y} {anchor_z}">'
@@ -200,7 +201,14 @@ class CablePlug(Task):
         variant = variant or {}
         n = int(variant.get("n", rng.integers(1, tc.n_cables + 1)))
         n = max(1, min(n, tc.n_cables))
-        ports = [int(k) for k in rng.choice(tc.n_ports, size=n, replace=False)]
+        if self.cfg.robot.n_arms == 2:
+            # each cable's port on the same side as its anchor (cable c lies on side (-1)^c): y < 0 <-> right arm
+            ports = []
+            for c in range(n):
+                cols = [k for k in range(tc.n_ports) if (self.port_yz(k)[0] < 0) == (c % 2 == 0) and k not in ports]
+                ports.append(int(rng.choice(cols)))
+        else:
+            ports = [int(k) for k in rng.choice(tc.n_ports, size=n, replace=False)]
         if "targets" in variant:
             ports = [int(k) for k in variant["targets"]]
         others = [k for k in range(tc.n_ports) if k not in ports]
@@ -251,11 +259,14 @@ class CablePlug(Task):
         """Smooth, non-self-intersecting planar cable layout with a reachable plug on the robot's side."""
         tc = self.tc
         x0, x1, y0, y1 = tc.spawn
+        anchor_x = tc.anchor_x
+        if self.cfg.robot.n_arms == 2:  # panel 8 cm closer: plug and anchor move back with it, room towards the robot
+            x0, x1, anchor_x = 0.10, min(x1, 0.50), tc.anchor_x - 0.08
         n, L = tc.n_links, tc.link_len
         lo, hi = np.array([x0, y0]), np.array([x1, y1])
         centre = (lo + hi) / 2
         for _ in range(max_tries):
-            ax = tc.anchor_x + rng.uniform(-0.05, 0.05)
+            ax = anchor_x + rng.uniform(-0.05, 0.05)
             anchor = np.array([ax, side * tc.anchor_abs_y])
             theta0 = -side * np.pi / 2 + rng.uniform(-0.7, 0.7)
             sv = (np.arange(n) + 0.5) * L
@@ -565,13 +576,22 @@ class CablePlug(Task):
             return "incomplete"
         if record.get("max_depth", {}).get(k, -1) > 0.001:
             return "not_seated"
-        if any(e[0] in ("insert", "jam") for e in expert.events):
+        if any(e[0].split(":")[-1] in ("insert", "jam") for e in expert.events):  # (bimanual events are arm-prefixed)
             return "jammed"
         return "other"
 
-    def make_expert(self, env, failure=None, seed=0, noise=True):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+        """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
+        its side of the bench and they take turns at the shared structure."""
         from ..experts.cable_plug import CablePlugExpert
 
+        if bimanual is None:
+            bimanual = len(env.arms) == 2
+        if bimanual and len(env.arms) == 2:
+            from ..experts.dual import DualArmExpert
+
+            sc = env.scenario.task
+            return DualArmExpert(env, CablePlugExpert, {c: sc["cables"][c]["plug_xy"] for c in range(sc["n"])}, failure=failure, seed=seed, noise=noise, ordered=False)
         return CablePlugExpert(env, failure=failure, seed=seed, noise=noise)
 
     def sample_failure(self, kind, s, rng, sc):

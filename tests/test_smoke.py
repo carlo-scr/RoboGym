@@ -83,4 +83,4 @@ def test_cfg_round_trip():
     cfg2 = EnvCfg.from_dict(cfg.to_dict())
     assert cfg2.to_dict() == cfg.to_dict()
     cfg3 = cfg.with_overrides({"task.bricks": ["2x2", "2x2"], "robot.n_arms": 2})
-    assert cfg3.task.bricks == ["2x2", "2x2"] and cfg3.robot.n_arms == 2 and cfg3.bench.y_half >= 0.85
+    assert cfg3.task.bricks == ["2x2", "2x2"] and cfg3.robot.n_arms == 2 and cfg3.bench.y_half >= 0.75

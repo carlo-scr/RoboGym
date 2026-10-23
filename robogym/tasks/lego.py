@@ -126,7 +126,8 @@ class Lego(Task):
             from ..shifts import OOD_OBJECT_COLORS
 
             rgba = [list(OOD_OBJECT_COLORS[int(k)]) for k in rng.choice(len(OOD_OBJECT_COLORS), size=n, replace=False)]
-        plate = [tc.plate_xy[0] + float(rng.uniform(-0.03, 0.03)), tc.plate_xy[1] + float(rng.uniform(-0.03, 0.03)), float(rng.uniform(-0.26, 0.26))]
+        px0 = tc.plate_xy[0] - (0.05 if self.cfg.robot.n_arms == 2 else 0.0)  # two arms: within both arms' reach
+        plate = [px0 + float(rng.uniform(-0.03, 0.03)), tc.plate_xy[1] + float(rng.uniform(-0.03, 0.03)), float(rng.uniform(-0.26, 0.26))]
         if "plate_shift" in shifts:
             plate = [tc.plate_xy[0] + float(rng.choice([-1, 1]) * rng.uniform(0.07, 0.12)), tc.plate_xy[1] + float(rng.choice([-1, 1]) * rng.uniform(0.10, 0.18)), float(rng.uniform(-0.8, 0.8))]
         goals = []
@@ -138,7 +139,10 @@ class Lego(Task):
                 break
         n = len(goals)
         cols, rgba = cols[:n], rgba[:n]
-        poses = self._sample_poses(rng, n, plate)
+        sides = None
+        if self.cfg.robot.n_arms == 2:  # each brick spawns on the side of its goal (that arm builds it)
+            sides = [self._goal_side(plate, k, goals[k]) for k in range(n)]
+        poses = self._sample_poses(rng, n, plate, sides=sides)
         return dict(n=n, kinds=list(tc.bricks[:n]), colors=cols, rgba=rgba, plate=plate, goals=goals, poses=poses,
                     gloss=float(rng.uniform(0.5, 1.0)) if "object_texture" in shifts else 0.0,
                     stud_scale=float(1 + 0.08 * rng.uniform(0.6, 1.0)) if "tight_fit" in shifts else 1.0,
@@ -217,11 +221,22 @@ class Lego(Task):
         q = G.yaw_quat(pyaw)
         return np.array([px, py, self.cfg.bench.top_z]) + G.quat_rotate(q, p), G.yaw_quat(pyaw + yaw)
 
-    def _sample_poses(self, rng, n, plate):
+    def _goal_side(self, plate, k, goal):
+        """+1 (left arm) / -1 (right arm): the world-y side of brick k's goal cell."""
+        p, _ = self.goal_pose_plate(k, goal)
+        px, py, pyaw = plate
+        y = py + np.sin(pyaw) * p[0] + np.cos(pyaw) * p[1]
+        return 1.0 if y >= 0 else -1.0
+
+    def _sample_poses(self, rng, n, plate, sides=None):
         x0, x1, y0, y1 = self.tc.spawn
+        if sides is not None:
+            x0, x1 = 0.24, 0.48
         hx, hy = self.Nx * self.P / 2 + 0.06, self.Ny * self.P / 2 + 0.06
         for _ in range(3000):
             P = np.stack([rng.uniform(x0, x1, n), rng.uniform(y0, y1, n)], 1)
+            if sides is not None:
+                P[:, 1] = np.asarray(sides) * rng.uniform(0.16, 0.36, n)
             if np.any((np.abs(P[:, 0] - plate[0]) < hx) & (np.abs(P[:, 1] - plate[1]) < hy)):
                 continue
             ok = True
@@ -507,9 +522,19 @@ class Lego(Task):
             return "not_snapped" if (fit["r_xy"] < 0.004 and fit["tilt"] < 0.08) else "misaligned"
         return "misaligned" if np.linalg.norm(pr["brick_pos"][k][:2] - goal[:2]) < 0.05 else "other"
 
-    def make_expert(self, env, failure=None, seed=0, noise=True):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+        """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
+        its side of the bench and they take turns at the shared structure."""
         from ..experts.lego import LegoExpert
 
+        if bimanual is None:
+            bimanual = len(env.arms) == 2
+        if bimanual and len(env.arms) == 2:
+            from ..experts.dual import DualArmExpert
+
+            sc = env.scenario.task
+            xy = {k: (0.0, self._goal_side(sc["plate"], k, sc["goals"][k])) for k in range(sc["n"])}  # assign by goal side
+            return DualArmExpert(env, LegoExpert, xy, failure=failure, seed=seed, noise=noise, ordered=True)
         return LegoExpert(env, failure=failure, seed=seed, noise=noise)
 
     def sample_failure(self, kind, s, rng, sc):

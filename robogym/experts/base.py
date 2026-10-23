@@ -28,16 +28,44 @@ def grasp_yaw_for(obj_yaw, cur_yaw):
     return float(cands[np.argmin(np.abs(G.wrap(cands - cur_yaw)))])
 
 
+class Coordinator:
+    """Turn-taking between the arms of a bimanual expert. Subgoals are completed in order (a stack / a
+    build / a sequence of ports); the shared structure is a zone only one arm may work in at a time.
+    An arm may pre-grasp its next object on its own side while the other arm is in the zone."""
+
+    def __init__(self, ordered: bool = True, subgoals=()):
+        self.ordered = ordered
+        self.subgoals = sorted(int(k) for k in subgoals)  # every subgoal any arm will work on
+        self.done: set = set()
+        self.zone_owner: str | None = None
+
+    def can_enter(self, arm: str, k: int) -> bool:
+        if self.zone_owner not in (None, arm):
+            return False
+        return (not self.ordered) or all(j in self.done for j in self.subgoals if j < k)
+
+    def enter(self, arm: str, k: int):
+        self.zone_owner = arm
+
+    def finish(self, arm: str, k: int):
+        self.done.add(k)
+        if self.zone_owner == arm:
+            self.zone_owner = None
+
+
 class Expert:
     name = "expert"
 
-    def __init__(self, env, arm: str | None = None, failure: FailureSpec | None = None, seed: int = 0, noise: bool = True):
+    def __init__(self, env, arm: str | None = None, failure: FailureSpec | None = None, seed: int = 0, noise: bool = True,
+                 subgoals=None, coord: Coordinator | None = None):
         self.env = env
         self.failure = failure
         self.rng = np.random.default_rng([seed, 7919])
         self.noise = noise
         self.arm = arm or self.pick_arm()
         self.i_arm = env.arms.index(self.arm)
+        self.subgoals = None if subgoals is None else [int(k) for k in subgoals]  # None: all of them (single arm)
+        self.coord = coord
         r = self.rng
         self.speed = float(r.uniform(0.85, 1.2)) if noise else 1.0
         self.grasp_jitter = r.normal(0, 0.0015, 2) if noise else np.zeros(2)
@@ -112,6 +140,26 @@ class Expert:
             if j != self.i_arm:
                 a[j, 6] = env.grip_cmd[s]
         return a.reshape(-1)
+
+    # ------------------------------------------------------------------ coordination (bimanual)
+    def my_subgoals(self, all_subgoals):
+        return list(all_subgoals) if self.subgoals is None else [k for k in all_subgoals if k in self.subgoals]
+
+    def wait_turn(self, k: int, max_s: float = 60.0):
+        """Hold the current pose until it is this arm's turn for subgoal k and the shared zone is free."""
+        if self.coord is None:
+            return
+        if not self.coord.can_enter(self.arm, k):
+            self.start_phase("wait")
+            for _ in range(int(max_s / self.env.dt)):
+                if self.coord.can_enter(self.arm, k):
+                    break
+                yield self._action()
+        self.coord.enter(self.arm, k)
+
+    def turn_done(self, k: int):
+        if self.coord is not None:
+            self.coord.finish(self.arm, k)
 
     # ------------------------------------------------------------------ primitives
     def move(self, p1, q1=None, T=None, speed=0.25, rot_speed=1.2, min_T=0.3, compliant=False, phase=None, lead=None,
@@ -269,6 +317,14 @@ class Expert:
 
     def misgrasp_offset(self):
         return self.failure.params["offset"] if self._f_here("misgrasp") else 0.0
+
+    def clear_zone(self):
+        """Leave the shared structure: rise and step back towards this arm's side (bimanual only)."""
+        if self.coord is None:
+            return
+        side = -1.0 if self.arm == "right" else 1.0
+        p = self.tp + np.array([-0.05, side * 0.15, 0.06])
+        yield from self.move(p, speed=0.3, min_T=0.4, phase="clear")
 
     def go_home(self, speed=0.3):
         p, q = self.home_pose[self.arm]

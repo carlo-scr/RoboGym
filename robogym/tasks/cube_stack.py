@@ -79,10 +79,19 @@ class CubeStack(Task):
 
     def _sample_poses(self, rng, sizes, base=0):
         """Cubes spread over the spawn area; the others stay >= 0.16 m from the base cube so the open
-        gripper (9 cm) never sweeps the growing stack while reaching for them."""
+        gripper (9 cm) never sweeps the growing stack while reaching for them. With two arms the base cube
+        sits near the centre line (both arms reach the stack) and the others spread over both sides."""
         x0, x1, y0, y1 = self.tc.spawn
+        two = self.cfg.robot.n_arms == 2
+        if two:
+            x0, x1, y0, y1 = 0.26, 0.48, -0.34, 0.34
         for _ in range(2000):
             P = np.stack([rng.uniform(x0, x1, len(sizes)), rng.uniform(y0, y1, len(sizes))], 1)
+            if two:
+                P[base] = (rng.uniform(0.30, 0.44), rng.uniform(-0.06, 0.06))  # the stack: reachable by both arms
+                for i in range(len(sizes)):
+                    if i != base:
+                        P[i, 1] = rng.choice([-1, 1]) * rng.uniform(0.14, 0.34)  # clearly on one arm's side
             ok = True
             for i in range(len(sizes)):
                 for j in range(i):
@@ -300,9 +309,18 @@ class CubeStack(Task):
         return "misplaced"
 
     # ---- expert / failures
-    def make_expert(self, env, failure=None, seed=0, noise=True):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+        """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
+        its side of the bench and they take turns at the shared structure."""
         from ..experts.cube_stack import CubeStackExpert
 
+        if bimanual is None:
+            bimanual = len(env.arms) == 2
+        if bimanual and len(env.arms) == 2:
+            from ..experts.dual import DualArmExpert
+
+            sc = env.scenario.task
+            return DualArmExpert(env, CubeStackExpert, {k: sc["poses"][sc["order"][k]][:2] for k in range(1, sc["n"])}, failure=failure, seed=seed, noise=noise, ordered=True)
         return CubeStackExpert(env, failure=failure, seed=seed, noise=noise)
 
     def sample_failure(self, kind, s, rng, sc):

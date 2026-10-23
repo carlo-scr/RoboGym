@@ -62,7 +62,7 @@ class CablePlugExpert(Expert):
         sc = env.scenario.task
         n = sc["n"]
         top = env.cfg.bench.top_z
-        for c in range(n):
+        for c in self.my_subgoals(range(n)):
             self.subgoal = c
             port = sc["cables"][c]["port"]
             if self._f_here("wrong_port"):
@@ -82,6 +82,7 @@ class CablePlugExpert(Expert):
             yield from self.settle()
             yield from self.grasp()
             yield from self.lift(0.09, speed=0.2, min_T=0.5)
+            yield from self.wait_turn(c)  # bimanual: one arm at the panel at a time
             # carry to the pre-insertion pose (plug re-measured in hand), then a short align hop
             goal = self._pre_insert_goal(c, port, self.PRE_DIST)
             yield from self.carry(goal[0], goal[1], speed=0.22, min_T=1.2)
@@ -106,6 +107,8 @@ class CablePlugExpert(Expert):
                 self.event("latched")
             yield from self.release()
             yield from self.move(self.tp - self.insert_axis * 0.05 + [0, 0, 0.04], speed=0.2, min_T=0.6, phase="retreat")
+            yield from self.clear_zone()
+            self.turn_done(c)
         self.subgoal = n
         yield from self.go_home()
 

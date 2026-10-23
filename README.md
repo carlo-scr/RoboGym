@@ -1,111 +1,116 @@
 # RoboGym
 
-A MuJoCo benchmark of **xArm 7 manipulation tasks with labelled failures, out-of-distribution shifts,
-test-time regimes and exact counterfactual branching**, built as the lab's common data source for
-world-model failure detection, latent steering, test-time adaptation and long-horizon manipulation
-research. It generalises [RobotPluggingSim](https://github.com/carlo-scr/RobotPluggingSim) (WR1 cable
-plugging) to the lab's two UFACTORY xArm 7 and to three task families.
+MuJoCo manipulation tasks for the lab's two **UFACTORY xArm 7**, built for research on world-model
+failure detection, latent steering, test-time adaptation and long-horizon manipulation: every episode
+is reproducible, labelled, and can be rewound to any step and branched.
 
-| cube stacking | oversized LEGO | Ethernet plugging |
-|---|---|---|
-| ![](media/hero_cube_stack.png) | ![](media/hero_lego.png) | ![](media/hero_cable_plug.png) |
+![Two xArm 7 stacking cubes](docs/img/hero_bimanual.jpg)
 
-* **Robot**: one or two UFACTORY xArm 7 with the xArm gripper, from MuJoCo Menagerie (measured
-  kinematics / inertia / servo gains / gripper linkage), on a lab bench with a wrist camera per arm and
-  three fixed cameras. Cartesian 20 Hz control with a compliant insertion mode and a wrist force-torque
-  sensor in the proprioceptive state.
-* **Tasks** (each with a scripted, closed-loop expert): `cube_stack` (2-4 cubes by size or pattern),
-  `lego` (2-4 oversized bricks pressed onto a baseplate following a random stable model), `cable_plug`
-  (1-2 RJ45 patch cables into LED-marked ports of a 24-port panel). The horizon is a variant knob.
-* **Failures**: 6 generic injected kinds (drop, weak grip, misgrasp, premature release, bump, stall) +
-  3 per task (misplace / wrong cube / low carry; misalign / partial press / wrong slot; misalign /
-  partial insert / wrong port), labelled separately from the *physical* outcome and with onset times.
-* **OOD shifts**: 20 generic (lighting, appearance, sensor, physics) + task-specific ones (cube size,
-  tight fit, stiff snap, plate shift, dense ports, LED distractors, panel offset, cable colours...),
-  each with a severity.
+## Tasks
+
+| Cube stacking | Oversized LEGO | Ethernet plugging |
+|:---:|:---:|:---:|
+| ![](docs/img/cube_stack.jpg) | ![](docs/img/lego.jpg) | ![](docs/img/cable_plug.jpg) |
+| stack 2-4 cubes by size (or a shown pattern) | press 2-4 bricks onto a baseplate following a target model | plug 1-2 RJ45 cables into the lit ports of a patch panel |
+
+Each task has a scripted, closed-loop expert that produces demonstrations, and the horizon (number of
+cubes / bricks / cables) is a per-episode knob. With `bimanual=True` two arms work together: each takes
+the objects on its side of the bench and they take turns at the shared stack, plate or panel.
+
+![Bimanual cube stacking](docs/img/bimanual_cube_stack.gif)
+
+## What you get
+
+* **Robot**: the Menagerie xArm 7 with the xArm gripper (one or two arms), a wrist camera per arm and
+  three fixed cameras; 20 Hz Cartesian control with a compliant insertion mode; a wrist force-torque
+  wrench in the proprioceptive state (28-D per arm).
+* **Failures**: 9 injected kinds (drop, weak grip, misgrasp, premature release, bump, stall, plus three
+  per task), labelled separately from what physically happened, with onset times.
+* **Out-of-distribution shifts**: lighting, appearance, sensor and physics families plus task-specific
+  ones (cube size, tight fit, dense ports, LED distractors, ...), each with a severity.
 * **Test-time regimes**: physics knobs (friction, mass, arm gains, gripper force, actuation delay,
-  proprio noise, ...) that can be switched on mid-episode and scheduled; TTA stream protocols
-  (`sudden`, `gradual`, `recurring`, `mixed`, `in_episode`) with ground-truth regime labels per step.
-* **Exact snapshots**: `get_state` / `set_state` capture physics + controller + latch state + regime;
-  restore-then-step is bit-exact, so K candidate action chunks can be executed from the same state.
-* **Datasets** in the layout of the lab's real-robot data (`episode.parquet`, one mp4 per camera,
-  `annotations.json`, `feature_report.json`) plus `sim_states.npz` for counterfactual restarts; a
-  resumable multiprocess generator; a Gymnasium wrapper.
+  proprio noise, ...) that switch on mid-episode or on a schedule, and the usual continual-adaptation
+  stream protocols (`sudden`, `gradual`, `recurring`, `mixed`, `in_episode`) with per-step labels.
+* **Exact rewind**: `get_state` / `set_state` restore physics, controller and latch state bit for bit, so
+  K candidate action chunks can be executed from the same moment.
+* **Datasets** in the layout of the lab's real-robot recordings (`episode.parquet`, one mp4 per camera,
+  `annotations.json`, `feature_report.json`) plus full simulator snapshots per step; a resumable
+  multiprocess generator; a Gymnasium wrapper.
 
-Everything not measured on the real cell is a strong placeholder assumption in
-[robogym/config.py](robogym/config.py), listed in [ASSUMPTIONS.md](ASSUMPTIONS.md).
+Robot cameras for each task (wrist, front, side, top):
 
-## Quick start
+![cameras](docs/img/cameras_cube_stack.jpg)
+![cameras](docs/img/cameras_lego.jpg)
+![cameras](docs/img/cameras_cable_plug.jpg)
+
+## Install
 
 ```bash
 git clone https://github.com/carlo-scr/RoboGym.git && cd RoboGym
 uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[dev,notebooks]"
-.venv/bin/pytest -q tests                                    # ~6 min: all tasks, restore exactness, export
-.venv/bin/python notebooks/build.py --execute                # tour / failures & shifts / data & hooks
-.venv/bin/python scripts/generate_dataset.py --task lego --out data/lego_v0 --n 50 --workers 8
-.venv/bin/python scripts/benchmark_experts.py --tasks cube_stack lego cable_plug --n 30
+.venv/bin/pytest -q tests          # ~8 min on a laptop
 ```
+
+## Use
 
 ```python
 from robogym.env import RoboGymEnv
-env = RoboGymEnv("lego")                       # or EnvCfg / make_cfg("lego", **{"robot.n_arms": 2, "task.bricks": ["2x2", "2x2"]})
+
+env = RoboGymEnv("lego", bimanual=True)         # "cube_stack" | "lego" | "cable_plug"
 obs = env.reset(seed=0, shifts=["slippery"], severity=0.7)
-ex = env.task.make_expert(env, seed=0)         # privileged "teleoperator"
+ex = env.task.make_expert(env, seed=0)          # scripted expert (both arms here)
 while not ex.done:
-    obs = env.step(ex.act())                   # 8-D per arm; obs 28-D per arm
-    info = env.info()                          # stage, progress, success, regime
+    obs = env.step(ex.act())                    # action: 8-D per arm, obs: 28-D per arm
+    info = env.info()                           # stage, progress, success, regime
 img = env.render("right_wrist")
-snap = env.get_state(); env.set_state(snap)    # exact restore
-env.set_regime({"pad_friction": 0.3})          # online test-time shift
+snap = env.get_state(); env.set_state(snap)     # exact rewind
+env.set_regime({"pad_friction": 0.3})           # online test-time shift
 ```
 
-## Layout
+```bash
+python scripts/generate_dataset.py --task cube_stack --out data/cubes --n 200 --workers 8
+python scripts/generate_dataset.py --task lego --out data/lego_tta --stream mixed --n 40
+python scripts/benchmark_experts.py --tasks cube_stack lego cable_plug --n 40
+python scripts/render_gallery.py --out media --video
+python notebooks/build.py --execute             # 00_tour, 01_failures_shifts_regimes, 02_data_and_research_hooks
+```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The research-facing API (branching, monitor labels,
-streams, feature columns) is mapped to each research thread in
-[docs/RESEARCH_HOOKS.md](docs/RESEARCH_HOOKS.md).
+Every modelling assumption that is not measured on the real cell (mounting, cameras, bench, object
+sizes, tolerances) is a field in [robogym/config.py](robogym/config.py); `make_cfg(task, **dotted)`
+or `RoboGymEnv(task, **dotted)` override it, e.g. `RoboGymEnv("lego", **{"task.scale": 2.0})`.
 
-| | |
-|---|---|
-| [robogym/env.py](robogym/env.py) | `RoboGymEnv`: IK controller, compliant mode, observe / privileged / info, render, snapshots, regimes |
-| [robogym/tasks/](robogym/tasks/) | task interface + the three tasks (model fragments, scenario sampling, labels, outcome classification) |
-| [robogym/experts/](robogym/experts/) | generator-based experts with Cartesian primitives and failure hooks |
-| [robogym/shifts.py](robogym/shifts.py), [failures.py](robogym/failures.py), [streams.py](robogym/streams.py) | OOD shifts, injected failures, TTA protocols |
-| [robogym/datagen.py](robogym/datagen.py), [parallel.py](robogym/parallel.py), [research.py](robogym/research.py) | episodes, export, resumable pool, branching / monitor labels |
-| [scripts/](scripts/) | dataset generation, expert benchmark, gallery / videos |
-| [notebooks/](notebooks/) | `00_tour`, `01_failures_shifts_regimes`, `02_data_and_research_hooks` (sources in `notebooks/src`, Colab-ready setup cell) |
+## Expert success
 
-## Status (v0.1)
-
-Scripted expert success (`scripts/benchmark_experts.py --n 40`, laptop, physics only; shifts at severity 0.7):
+`scripts/benchmark_experts.py --n 40` (physics only; shifts at severity 0.7):
 
 | task | horizon | nominal | slippery | heavy object | weak gripper | actuation delay | arm gain drift |
 |---|---|---|---|---|---|---|---|
-| cube_stack | 1 / 2 / 3 cubes to place | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 0.91 |
+| cube_stack | 1 / 2 / 3 placements | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 0.91 |
 | lego | 2 / 3 / 4 bricks | 1.00 / 1.00 / 0.56 | 1.00 / 0.86 / 0.36 | 1.00 / 0.95 / 0.55 | 1.00 / 0.91 / 0.55 | 1.00 / 0.91 / 0.55 | 0.71 / 0.45 / 0.09 |
 | cable_plug | 1 / 2 cables | 0.82 / 0.61 | 0.87 / 0.52 | 0.93 / 0.52 | 0.87 / 0.52 | 0.73 / 0.32 | 0.67 / 0.44 |
 
-Reading the table: cube stacking is solved by the expert under every shift; the LEGO expert is reliable
-up to 3 bricks and the 4-brick builds (which include the 2x4) still jam or drop about half the time; the
-cable expert jams at the jack lead-in in ~15 % of single-cable episodes (perception noise 0.3 mm against
-a 0.8 mm half-clearance) and errors compound over two cables. Arm-gain drift is the most hurtful regime
-(force-limited pushes become too weak for the detents), actuation delay the second: both are meant to be
-hurtful test-time shifts. Failure modes are labelled (`jammed`, `not_seated`, `dropped`, `incomplete`,
-`misaligned`, ...), so these episodes are usable data, not waste. Throughput on an M-series laptop core:
-~1-2 s per physics-only episode, ~3x more with two 320x240 cameras.
+Bimanual (8 seeds): cube stacking 8/8, LEGO 8/8, cable plugging 4/8 (each arm latches its cable about
+70 % of the time; the side-mounted arms insert at an angle). Failed episodes are labelled
+(`jammed`, `not_seated`, `dropped`, `misaligned`, ...), so they are data, not waste. Arm-gain drift and
+actuation delay are the most hurtful regimes by design.
 
-## Media
+## Layout
 
-`scripts/render_gallery.py --out media --video` renders the hero shots above, all cameras per task,
-an OOD gallery per task and one expert episode per task as a 2x2 mosaic video (media/ is gitignored).
+| | |
+|---|---|
+| [robogym/env.py](robogym/env.py) | `RoboGymEnv`: controller, observations, labels, rendering, snapshots, regimes |
+| [robogym/tasks/](robogym/tasks/) | task interface and the three tasks |
+| [robogym/experts/](robogym/experts/) | single-arm experts, the bimanual coordinator, failure hooks |
+| [robogym/shifts.py](robogym/shifts.py), [failures.py](robogym/failures.py), [streams.py](robogym/streams.py) | OOD shifts, injected failures, test-time protocols |
+| [robogym/datagen.py](robogym/datagen.py), [parallel.py](robogym/parallel.py), [research.py](robogym/research.py) | episodes and export, parallel generation, branching and monitor labels |
+| [scripts/](scripts/), [notebooks/](notebooks/), [tests/](tests/) | CLI tools, Colab-ready notebooks, test suite |
 
 ## Roadmap
 
-1. Real cell numbers: arm mounting, gripper force setting, camera poses / intrinsics, bench, object sizes.
-2. Bimanual experts (hand-over, holding the panel / baseplate with the second arm).
-3. Disassembly tasks (unplug, pull bricks apart): replace the welds with breakable constraints.
-4. Image-based policies + the RobotPluggingSim learners (Diffusion Policy, latent WM monitor, steering)
-   on these datasets; LeRobot-format export.
+1. Real cell numbers: mounting, gripper force setting, camera poses and intrinsics, bench, object sizes.
+2. Hand-over and hold-and-place bimanual behaviours (the current coordination is turn-taking).
+3. Disassembly: unplug, pull bricks apart.
+4. Image-based policies and the lab's latent world-model monitors on these datasets; LeRobot export.
 5. MJX / MuJoCo Warp batch stepping for GPU counterfactual scoring.
 
 ## License

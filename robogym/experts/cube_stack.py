@@ -31,7 +31,7 @@ class CubeStackExpert(Expert):
             order[k], order[k + 1] = order[k + 1], order[k]
             self.event("wrong_cube")
         top = env.cfg.bench.top_z
-        for k in range(1, n):
+        for k in self.my_subgoals(range(1, n)):
             self.subgoal = k - 1
             ci = order[k]
             s = sc["sizes"][ci]
@@ -67,6 +67,7 @@ class CubeStackExpert(Expert):
             z_carry = max(stack_top + clearance + s / 2, top + s / 2 + 0.03)
             lift_p = self.tp + [0, 0, max(0.0, z_carry - pr["cube_pos"][ci][2])]
             yield from self.move(lift_p, speed=0.2, min_T=0.4, phase="lift")
+            yield from self.wait_turn(k)  # bimanual: the stack is built in order, one arm at a time
             # carry: move the *cube* to above the goal
             above_p, above_q = self.tcp_for_object_pose(goal_p + [0, 0, z_carry - goal_p[2]], goal_q, rel)
             yield from self.carry(above_p, above_q, speed=0.25, min_T=0.8)
@@ -78,5 +79,7 @@ class CubeStackExpert(Expert):
             yield from self.settle(tol=0.003, T_max=0.5, phase="place")
             yield from self.release()
             yield from self.move(self.tp + [0, 0, 0.08], speed=0.25, min_T=0.4, phase="retreat")
+            yield from self.clear_zone()  # leave the zone
+            self.turn_done(k)
         self.subgoal = n - 1
         yield from self.go_home()

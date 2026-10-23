@@ -74,7 +74,7 @@ class GripperCfg:
 class RobotCfg:
     n_arms: int = 1
     # Base plate centres on the bench (x, y) for ("right", "left"). A single arm sits at y = 0.
-    base_xy_dual: tuple = ((0.0, -0.45), (0.0, 0.45))
+    base_xy_dual: tuple = ((0.0, -0.35), (0.0, 0.35))  # both arms reach the centre line with margin (xArm 7: 0.7 m)
     base_xy_single: tuple = ((0.0, 0.0),)
     base_z: float = 0.0  # bolted straight onto the bench top (table top = z 0)
     base_yaw: float = 0.0  # both arms face +x
@@ -283,10 +283,14 @@ class EnvCfg:
         elif isinstance(self.task, dict):
             d = dict(self.task)
             self.task = TASK_CFGS[d.pop("name")](**d)
-        if self.robot.n_arms == 2 and self.bench.y_half < 0.85:
-            self.bench.y_half = 0.85
+        if self.robot.n_arms == 2 and self.bench.y_half < 0.75:
+            self.bench.y_half = 0.75
         if self.robot.n_arms == 1 and self.camera.record and any(c.startswith("left_") for c in self.camera.record):
             self.camera.record = tuple(c for c in self.camera.record if not c.startswith("left_"))
+        if self.robot.n_arms == 2 and "left_wrist" not in self.camera.record:
+            rec = list(self.camera.record)
+            rec.insert(1 if rec and rec[0] == "right_wrist" else 0, "left_wrist")
+            self.camera.record = tuple(rec)
 
     @property
     def task_name(self) -> str:
@@ -319,7 +323,9 @@ def _from(cls, d, **sub):
     return cls(**d)
 
 
-def make_cfg(task: str = "cube_stack", **overrides) -> EnvCfg:
-    """EnvCfg for a task with dotted overrides: make_cfg("lego", **{"task.bricks": ("2x2", "2x2"), "robot.n_arms": 2})."""
+def make_cfg(task: str = "cube_stack", bimanual: bool = False, **overrides) -> EnvCfg:
+    """EnvCfg for a task with dotted overrides: make_cfg("lego", bimanual=True, **{"task.bricks": ("2x2", "2x2")})."""
     cfg = EnvCfg(task=task)
+    if bimanual:
+        overrides = {"robot.n_arms": 2, **overrides}
     return cfg.with_overrides(overrides) if overrides else cfg

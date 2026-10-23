@@ -73,9 +73,15 @@ def apply_image_fx(img: np.ndarray, fx: dict, seed: int) -> np.ndarray:
 class RoboGymEnv:
     STATE_SPEC = mujoco.mjtState.mjSTATE_INTEGRATION
 
-    def __init__(self, cfg: EnvCfg | str | None = None, render: bool = True):
+    def __init__(self, cfg: EnvCfg | str | None = None, render: bool = True, bimanual: bool = False, **overrides):
+        """`cfg` is an EnvCfg or a task name; `bimanual=True` mounts two xArm 7 (the experts then use both);
+        dotted `overrides` go into the config (e.g. RoboGymEnv("lego", **{"task.bricks": ["2x2", "2x2"]}))."""
         if cfg is None or isinstance(cfg, str):
-            cfg = EnvCfg(task=cfg or "cube_stack")
+            from .config import make_cfg
+
+            cfg = make_cfg(cfg or "cube_stack", bimanual=bimanual, **overrides)
+        elif bimanual or overrides:
+            cfg = cfg.with_overrides({**({"robot.n_arms": 2} if bimanual else {}), **overrides})
         self.cfg = cfg
         self.arms = cfg.robot.arms
         self.task = get_task_class(cfg.task_name)(cfg)
@@ -278,7 +284,10 @@ class RoboGymEnv:
 
     @property
     def episode_max_s(self) -> float:
-        return self.cfg.sim.episode_max_s or self.task.default_episode_s(self.scenario.task)
+        if self.cfg.sim.episode_max_s:
+            return self.cfg.sim.episode_max_s
+        t = self.task.default_episode_s(self.scenario.task)
+        return t * 1.35 if len(self.arms) == 2 else t  # bimanual: turn-taking at the shared structure
 
     # ------------------------------------------------------------------ control
     def pending_targets(self, side):
