@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+data/
+runs/
+media/
+robogym/assets/_generated/
+MUJOCO_LOG.TXT
+*.zip
+.DS_Store

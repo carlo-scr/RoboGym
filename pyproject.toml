@@ -1,0 +1,48 @@
+[project]
+name = "robogym"
+version = "0.1.0"
+description = "MuJoCo benchmark of xArm 7 manipulation tasks (cube stacking, LEGO assembly, Ethernet plugging) with labelled failures, OOD shifts, test-time regimes and exact counterfactual branching, for failure-detection / latent-steering / test-time-adaptation research"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Carlo Schreiber"}]
+dependencies = [
+    "mujoco>=3.2",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "imageio[ffmpeg]>=2.31",
+    "matplotlib>=3.7",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+gym = ["gymnasium>=1.0"]
+learn = ["torch>=2.1", "scipy>=1.10"]
+notebooks = ["jupyter", "nbconvert", "ipykernel"]
+dev = ["pytest>=8", "ruff>=0.5", "gymnasium>=1.0"]
+
+[project.urls]
+Repository = "https://github.com/carlo-scr/RoboGym"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["robogym", "robogym.robot", "robogym.tasks", "robogym.experts"]
+
+[tool.setuptools.package-data]
+robogym = ["assets/xarm7/*.stl", "assets/xarm7/LICENSE", "assets/xarm7/*.md", "assets/xarm7/*.xml"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B006", "B008", "B905", "UP007", "UP045"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

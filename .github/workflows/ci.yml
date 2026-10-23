@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv venv --python ${{ matrix.python }} .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libosmesa6
+      - name: ruff
+        run: .venv/bin/ruff check robogym scripts tests
+      - name: tests (headless, EGL unavailable -> osmesa)
+        env:
+          MUJOCO_GL: osmesa
+          PYOPENGL_PLATFORM: osmesa
+        run: .venv/bin/pytest -q tests -x
