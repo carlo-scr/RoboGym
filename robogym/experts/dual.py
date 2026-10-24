@@ -20,7 +20,7 @@ def assign_by_side(env, subgoal_xy: dict) -> dict:
 class DualArmExpert:
     name = "dual_arm_expert"
 
-    def __init__(self, env, make_sub, subgoal_xy: dict, failure=None, seed: int = 0, noise: bool = True, ordered: bool = True):
+    def __init__(self, env, make_sub, subgoal_xy: dict, failure=None, seed: int = 0, noise: bool = True, recover: bool = False, ordered: bool = True):
         self.env = env
         self.arms = tuple(env.arms)
         self.coord = Coordinator(ordered=ordered, subgoals=subgoal_xy.keys())
@@ -29,7 +29,7 @@ class DualArmExpert:
         self.subs = {}
         for i, arm in enumerate(self.arms):
             f = failure if (failure is not None and f_sub in self.assign[arm]) else None
-            self.subs[arm] = make_sub(env, arm=arm, subgoals=self.assign[arm], coord=self.coord, failure=f, seed=seed + 31 * i, noise=noise)
+            self.subs[arm] = make_sub(env, arm=arm, subgoals=self.assign[arm], coord=self.coord, failure=f, seed=seed + 31 * i, noise=noise, recover=recover)
         self.failure = failure
         self.i_arm = 0
         self.arm = "both"

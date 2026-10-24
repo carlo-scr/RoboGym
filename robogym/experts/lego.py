@@ -78,12 +78,20 @@ class LegoExpert(Expert):
         return best
 
     def plan(self):
-        env, task = self.env, self.env.task
+        env, _task = self.env, self.env.task
         sc = env.scenario.task
         n = sc["n"]
+        for k in self.my_subgoals(range(n)):
+            yield from self.subgoal_with_recovery(k, self._place_brick)
+        self.subgoal = n
+        yield from self.go_home()
+
+    def _place_brick(self, k):
+        env, task = self.env, self.env.task
+        sc = env.scenario.task
         top = env.cfg.bench.top_z
         H = task.H
-        for k in self.my_subgoals(range(n)):
+        if True:
             self.subgoal = k
             pr = env.privileged()
             bp, bq = pr["brick_pos"][k], pr["brick_quat"][k]
@@ -162,5 +170,3 @@ class LegoExpert(Expert):
             yield from self.move(self.tp + [0, 0, 0.07], speed=0.25, min_T=0.4, phase="retreat")
             yield from self.clear_zone()
             self.turn_done(k)
-        self.subgoal = n
-        yield from self.go_home()

@@ -178,6 +178,10 @@ class CubeStack(Task):
     def horizon(self, sc):
         return sc["n"] - 1
 
+    def subgoal_done(self, env, k):
+        pr = self.privileged(env)
+        return bool(pr["seated"][k]) and pr["grasped"][env.scenario.task["order"][k]] is None
+
     def goal_description(self, sc):
         return "stack cubes " + " -> ".join(sc["colors"][i] for i in sc["order"]) + " (bottom to top)"
 
@@ -309,7 +313,7 @@ class CubeStack(Task):
         return "misplaced"
 
     # ---- expert / failures
-    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None, recover=False):
         """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
         its side of the bench and they take turns at the shared structure."""
         from ..experts.cube_stack import CubeStackExpert
@@ -320,8 +324,8 @@ class CubeStack(Task):
             from ..experts.dual import DualArmExpert
 
             sc = env.scenario.task
-            return DualArmExpert(env, CubeStackExpert, {k: sc["poses"][sc["order"][k]][:2] for k in range(1, sc["n"])}, failure=failure, seed=seed, noise=noise, ordered=True)
-        return CubeStackExpert(env, failure=failure, seed=seed, noise=noise)
+            return DualArmExpert(env, CubeStackExpert, {k: sc["poses"][sc["order"][k]][:2] for k in range(1, sc["n"])}, failure=failure, seed=seed, noise=noise, recover=recover, ordered=True)
+        return CubeStackExpert(env, failure=failure, seed=seed, noise=noise, recover=recover)
 
     def sample_failure(self, kind, s, rng, sc):
         if kind == "misplace":

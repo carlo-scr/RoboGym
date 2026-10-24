@@ -17,6 +17,7 @@ SHIFT_GROUPS = {
     "appearance": ("bench_color", "clutter", "object_color", "object_texture"),
     "sensor": ("camera_shift", "camera_noise", "motion_blur", "overexposure", "lens_occlusion"),
     "physics": ("slippery", "heavy_object", "arm_gain_drift", "weak_gripper", "action_delay", "sticky_bench", "obs_noise"),
+    "proprio": ("ft_noise", "ft_bias", "obs_delay"),
 }
 ALL_SHIFTS = tuple(s for g in SHIFT_GROUPS.values() for s in g)
 ALIASES = {"lighting": "lighting_dim", "distractors": "clutter", "slippery_gripper": "slippery"}
@@ -84,6 +85,12 @@ def apply_shifts(cfg: EnvCfg, sc: Scenario, rng: np.random.Generator, shifts, s:
         sc.regime["bench_friction"] = lerp(1.8, 4.0, s)
     if "obs_noise" in shifts:
         sc.regime["obs_noise"] = lerp(0.002, 0.02, s)
+    if "ft_noise" in shifts:
+        sc.regime["ft_noise"] = lerp(0.5, 4.0, s)
+    if "ft_bias" in shifts:
+        sc.regime["ft_bias"] = float(rng.choice([-1, 1])) * lerp(1.0, 8.0, s)
+    if "obs_delay" in shifts:
+        sc.regime["obs_delay"] = int(round(lerp(1, 4, s)))
     return sc
 
 
@@ -114,4 +121,5 @@ def describe(shift: str) -> str:
         "overexposure": "gain + gamma", "lens_occlusion": "smudge on the lens", "slippery": "low finger-pad friction",
         "heavy_object": "object mass x2-5", "arm_gain_drift": "arm servo gains reduced", "weak_gripper": "gripper force reduced",
         "action_delay": "1-5 control steps of actuation latency", "sticky_bench": "high bench friction", "obs_noise": "proprioception noise",
+        "ft_noise": "wrist force-torque noise", "ft_bias": "wrist force-torque offset", "obs_delay": "1-4 control steps of sensing latency",
     }.get(shift, shift)

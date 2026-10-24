@@ -30,8 +30,17 @@ class CubeStackExpert(Expert):
             k = min(k, n - 2)
             order[k], order[k + 1] = order[k + 1], order[k]
             self.event("wrong_cube")
-        top = env.cfg.bench.top_z
         for k in self.my_subgoals(range(1, n)):
+            yield from self.subgoal_with_recovery(k, lambda kk: self._place_cube(kk, order))
+        self.subgoal = n - 1
+        yield from self.go_home()
+
+    def _place_cube(self, k, order):
+        env = self.env
+        sc = env.scenario.task
+        n = sc["n"]
+        top = env.cfg.bench.top_z
+        if True:
             self.subgoal = k - 1
             ci = order[k]
             s = sc["sizes"][ci]
@@ -81,5 +90,3 @@ class CubeStackExpert(Expert):
             yield from self.move(self.tp + [0, 0, 0.08], speed=0.25, min_T=0.4, phase="retreat")
             yield from self.clear_zone()  # leave the zone
             self.turn_done(k)
-        self.subgoal = n - 1
-        yield from self.go_home()

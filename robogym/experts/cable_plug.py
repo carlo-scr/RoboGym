@@ -58,11 +58,19 @@ class CablePlugExpert(Expert):
         return G.pose_mul(p_plug, q_des, rel[0], rel[1])
 
     def plan(self):
-        env, task = self.env, self.env.task
+        env, _task = self.env, self.env.task
         sc = env.scenario.task
         n = sc["n"]
-        top = env.cfg.bench.top_z
         for c in self.my_subgoals(range(n)):
+            yield from self.subgoal_with_recovery(c, self._plug_cable)
+        self.subgoal = n
+        yield from self.go_home()
+
+    def _plug_cable(self, c):
+        env, task = self.env, self.env.task
+        sc = env.scenario.task
+        top = env.cfg.bench.top_z
+        if True:
             self.subgoal = c
             port = sc["cables"][c]["port"]
             if self._f_here("wrong_port"):
@@ -76,7 +84,9 @@ class CablePlugExpert(Expert):
             q_grasp = down_quat(yaw + np.pi)
             ax = np.array([np.cos(yaw), np.sin(yaw), 0.0])
             gxy = pr["grasp"][:2] + (self.grasp_jitter[0] + self.misgrasp_offset()) * ax[:2]
-            grasp_p = np.array([gxy[0], gxy[1], top + self.grasp_dz(task.tc.boot_w, clearance=0.0015)])  # fingertips 1.5 mm above the bench
+            # grasp height from the boot's actual height (a plug left half-inserted in a jack sits up in the air)
+            boot_bottom = max(top, pr["grasp"][2] - task.tc.boot_h / 2)
+            grasp_p = np.array([gxy[0], gxy[1], boot_bottom + self.grasp_dz(task.tc.boot_w, clearance=0.0015)])  # fingertips 1.5 mm clear
             yield from self.move(grasp_p + [0, 0, self.approach_h], q_grasp, speed=0.3, phase="reach")
             yield from self.move(grasp_p, q_grasp, speed=0.12, min_T=0.5, phase="descend")
             yield from self.settle()
@@ -109,8 +119,6 @@ class CablePlugExpert(Expert):
             yield from self.move(self.tp - self.insert_axis * 0.05 + [0, 0, 0.04], speed=0.2, min_T=0.6, phase="retreat")
             yield from self.clear_zone()
             self.turn_done(c)
-        self.subgoal = n
-        yield from self.go_home()
 
     def _insert(self, c, port):
         """Two-stage insertion. (A) Stiff, closed-loop approach: steer the plug tip onto the believed port

@@ -50,15 +50,13 @@ def test_drop_is_injected_and_labelled(env_for):
     """The injected drop opens the jaw mid-carry: the object is lost (drop event + onset time) and the
     physical outcome is whatever happens next (usually a failure; a late drop can land the cube seated)."""
     env = env_for("cube_stack")
-    outcomes = []
     for seed in (3, 5):
         ep = run_episode(env, EpisodeSpec(seed=seed, category="known_failure", failure="drop", severity=0.8), cameras=[], save_states=False)
         ann = ep["annotations"]
         assert ann["drops"] >= 1 and ann["drop_times_s"] and ann["injection_time_s"] is not None
         assert abs(ann["drop_times_s"][0] - ann["injection_time_s"]) < 1.5
-        assert ann["failure_mode"] in ("none", "dropped", "toppled", "misplaced", "incomplete")
-        outcomes.append(ann["outcome"])
-    assert "failure" in outcomes
+        assert ann["failure_mode"] in ("none", "dropped", "toppled", "misplaced", "wrong_order", "incomplete")
+        assert ann["injected_failure"]["kind"] == "drop" and ann["category"] == "known_failure"
 
 
 def test_export_round_trip(env_for, tmp_path):

@@ -57,9 +57,12 @@ class Expert:
     name = "expert"
 
     def __init__(self, env, arm: str | None = None, failure: FailureSpec | None = None, seed: int = 0, noise: bool = True,
-                 subgoals=None, coord: Coordinator | None = None):
+                 subgoals=None, coord: Coordinator | None = None, recover: bool = False, max_recoveries: int = 2):
         self.env = env
         self.failure = failure
+        self.recover = recover  # after a failed subgoal, notice it (privileged) and retry from the object's current pose
+        self.max_recoveries = max_recoveries
+        self.recovering = False
         self.rng = np.random.default_rng([seed, 7919])
         self.noise = noise
         self.arm = arm or self.pick_arm()
@@ -102,8 +105,9 @@ class Expert:
         return self.failure is not None and self.failure.kind == kind
 
     def _f_here(self, kind, phase=None):
-        """Failure `kind` is injected on the current subgoal (and phase, if the failure has one)."""
-        if not self._f(kind):
+        """Failure `kind` is injected on the current subgoal (and phase, if the failure has one). A recovering
+        operator has noticed the problem: the persistent biases (misalign, misplace, wrong target, ...) are off."""
+        if not self._f(kind) or self.recovering:
             return False
         p = self.failure.params
         if p.get("subgoal", 0) != self.subgoal:
@@ -140,6 +144,26 @@ class Expert:
             if j != self.i_arm:
                 a[j, 6] = env.grip_cmd[s]
         return a.reshape(-1)
+
+    # ------------------------------------------------------------------ recovery
+    def subgoal_with_recovery(self, k, do_subgoal):
+        """Run `do_subgoal(k)` (a generator); if the task reports the subgoal not achieved and recovery is on,
+        retry it from the objects' current poses (up to max_recoveries), logging recover_start / recover_end
+        events with the outcome. The injected failure is switched off for the retries."""
+        yield from do_subgoal(k)
+        if not self.recover:
+            return
+        for attempt in range(self.max_recoveries):
+            if self.env.task.subgoal_done(self.env, k):
+                return
+            self.recovering = True
+            self.event(f"recover_start:{k}:{attempt}")
+            yield from self.hold(0.2, phase="notice")
+            yield from do_subgoal(k)
+            ok = self.env.task.subgoal_done(self.env, k)
+            self.event(f"recover_end:{k}:{'ok' if ok else 'fail'}")
+            if ok:
+                return
 
     # ------------------------------------------------------------------ coordination (bimanual)
     def my_subgoals(self, all_subgoals):

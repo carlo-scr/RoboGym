@@ -416,6 +416,10 @@ class CablePlug(Task):
     def horizon(self, sc):
         return sc["n"]
 
+    def subgoal_done(self, env, k):
+        pr = self.privileged(env)
+        return bool(pr["done"][k]) and pr["grasped"][k] is None
+
     def goal_description(self, sc):
         return "plug " + ", ".join(f"cable {c} into port {cab['port'] + 1}" for c, cab in enumerate(sc["cables"]))
 
@@ -580,7 +584,7 @@ class CablePlug(Task):
             return "jammed"
         return "other"
 
-    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None, recover=False):
         """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
         its side of the bench and they take turns at the shared structure."""
         from ..experts.cable_plug import CablePlugExpert
@@ -591,8 +595,8 @@ class CablePlug(Task):
             from ..experts.dual import DualArmExpert
 
             sc = env.scenario.task
-            return DualArmExpert(env, CablePlugExpert, {c: sc["cables"][c]["plug_xy"] for c in range(sc["n"])}, failure=failure, seed=seed, noise=noise, ordered=False)
-        return CablePlugExpert(env, failure=failure, seed=seed, noise=noise)
+            return DualArmExpert(env, CablePlugExpert, {c: sc["cables"][c]["plug_xy"] for c in range(sc["n"])}, failure=failure, seed=seed, noise=noise, recover=recover, ordered=False)
+        return CablePlugExpert(env, failure=failure, seed=seed, noise=noise, recover=recover)
 
     def sample_failure(self, kind, s, rng, sc):
         if kind == "misalign":

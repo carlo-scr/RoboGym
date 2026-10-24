@@ -316,6 +316,10 @@ class Lego(Task):
     def horizon(self, sc):
         return sc["n"]
 
+    def subgoal_done(self, env, k):
+        pr = self.privileged(env)
+        return bool(pr["at_goal"][k]) and pr["grasped"][k] is None
+
     def goal_description(self, sc):
         return "assemble " + ", ".join(f"{c} {k} at level {g[2]}" for c, k, g in zip(sc["colors"], sc["kinds"], sc["goals"]))
 
@@ -522,7 +526,7 @@ class Lego(Task):
             return "not_snapped" if (fit["r_xy"] < 0.004 and fit["tilt"] < 0.08) else "misaligned"
         return "misaligned" if np.linalg.norm(pr["brick_pos"][k][:2] - goal[:2]) < 0.05 else "other"
 
-    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None):
+    def make_expert(self, env, failure=None, seed=0, noise=True, bimanual=None, recover=False):
         """Scripted expert. With two arms (and bimanual not False) both arms work: each takes the objects on
         its side of the bench and they take turns at the shared structure."""
         from ..experts.lego import LegoExpert
@@ -534,8 +538,8 @@ class Lego(Task):
 
             sc = env.scenario.task
             xy = {k: (0.0, self._goal_side(sc["plate"], k, sc["goals"][k])) for k in range(sc["n"])}  # assign by goal side
-            return DualArmExpert(env, LegoExpert, xy, failure=failure, seed=seed, noise=noise, ordered=True)
-        return LegoExpert(env, failure=failure, seed=seed, noise=noise)
+            return DualArmExpert(env, LegoExpert, xy, failure=failure, seed=seed, noise=noise, recover=recover, ordered=True)
+        return LegoExpert(env, failure=failure, seed=seed, noise=noise, recover=recover)
 
     def sample_failure(self, kind, s, rng, sc):
         if kind == "misalign":

@@ -27,6 +27,8 @@ REGIME_FAMILIES = {
     "noisy_obs": lambda s: {"obs_noise": lerp(0.002, 0.02, s)},
     "heavy_cable": lambda s: {"cable_mass": lerp(2.5, 4.0, s)},
     "stiff_cable": lambda s: {"cable_stiffness": lerp(3.0, 6.0, s)},
+    "ft_drift": lambda s: {"ft_bias": lerp(1.0, 8.0, s), "ft_noise": lerp(0.5, 2.0, s)},
+    "sensing_delay": lambda s: {"obs_delay": int(round(lerp(1, 4, s)))},
 }
 
 

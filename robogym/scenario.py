@@ -19,8 +19,10 @@ from .config import EnvCfg
 
 BASE_LIGHTS = {"key": 0.6, "fill": 0.25, "ceil_a": 0.2, "ceil_b": 0.2, "spot": 0.0, "back": 0.0}
 REGIME_KEYS = ("pad_friction", "bench_friction", "object_friction", "object_mass", "arm_gain", "grip_force",
-               "action_delay", "obs_noise", "cable_mass", "cable_stiffness", "gravity")
-NOMINAL_REGIME = {k: 1.0 for k in REGIME_KEYS} | {"action_delay": 0, "obs_noise": 0.0}
+               "action_delay", "obs_noise", "cable_mass", "cable_stiffness", "gravity", "ft_noise", "ft_bias", "obs_delay")
+NOMINAL_REGIME = {k: 1.0 for k in REGIME_KEYS} | {"action_delay": 0, "obs_noise": 0.0, "ft_noise": 0.0, "ft_bias": 0.0, "obs_delay": 0}
+BENCH_MATERIALS = ("bench", "bench_v1", "bench_v2", "bench_dark")
+MAT_MATERIALS = ("mat", "mat_grey", "mat_green", "mat_blue")
 
 
 @dataclass
@@ -36,6 +38,8 @@ class Scenario:
     bench_rgba: list = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])  # tint on the bench texture
     mat_rgba: list = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
     distractors: list = field(default_factory=list)  # [[index, x, y, yaw], ...]
+    light_jitter: dict = field(default_factory=dict)  # light name -> [dx, dy, dz]
+    materials: dict = field(default_factory=dict)  # geom name -> material name (bench / mat texture variants)
     # Sensors
     cam_jitter: dict = field(default_factory=dict)  # camera -> [dx, dy, dz, rx, ry, rz]
     image_fx: dict = field(default_factory=dict)  # see env.apply_image_fx
@@ -93,7 +97,9 @@ def sample_scenario(cfg: EnvCfg, seed: int, shifts=(), severity: float = 0.5, va
     tint = rng.uniform(0.95, 1.0, 3)
     sc.lights = {k: (v * rng.uniform(0.8, 1.2) * tint).tolist() for k, v in BASE_LIGHTS.items()}
     sc.bench_rgba = [*(rng.uniform(0.9, 1.05, 3)).tolist(), 1.0]
-    sc.cam_jitter = {c: np.concatenate([rng.normal(0, 0.0015, 3), rng.normal(0, 0.012, 3)]).tolist() for c in cams}
+    sc.cam_jitter = {c: np.concatenate([rng.normal(0, 0.0015, 3), rng.normal(0, 0.012, 3), [rng.normal(0, 0.02)]]).tolist() for c in cams}
+    sc.light_jitter = {k: rng.normal(0, 0.08, 3).tolist() for k in ("key", "fill", "ceil_a", "ceil_b")}
+    sc.materials = {"bench": str(rng.choice(BENCH_MATERIALS)), "bench_mat": str(rng.choice(MAT_MATERIALS))}
     sc.image_fx = {"noise": float(rng.uniform(0, 2.0)), "gain": float(rng.uniform(0.95, 1.05))}
     sc.home_noise = rng.normal(0, 0.02, 7 * cfg.robot.n_arms).tolist()
     sc.regime = dict(NOMINAL_REGIME)

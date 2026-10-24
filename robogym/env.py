@@ -148,8 +148,8 @@ class RoboGymEnv:
         m = self.model
         return {k: getattr(m, k).copy() for k in (
             "geom_rgba", "geom_friction", "geom_pos", "geom_quat", "geom_size", "body_mass", "body_inertia", "body_pos", "body_quat",
-            "jnt_stiffness", "light_diffuse", "cam_pos", "cam_quat", "mat_rgba", "actuator_gainprm", "actuator_biasprm",
-            "actuator_forcerange", "eq_data", "body_invweight0", "dof_invweight0", "dof_M0", "body_subtreemass")}
+            "jnt_stiffness", "light_diffuse", "light_pos", "cam_pos", "cam_quat", "cam_fovy", "geom_matid", "mat_rgba", "actuator_gainprm",
+            "actuator_biasprm", "actuator_forcerange", "eq_data", "body_invweight0", "dof_invweight0", "dof_M0", "body_subtreemass")}
 
     # ------------------------------------------------------------------ reset / randomisation
     def _apply_scenario(self, sc: Scenario):
@@ -171,7 +171,15 @@ class RoboGymEnv:
             if c in self.cam_ids:
                 cid = self.cam_ids[c]
                 m.cam_pos[cid] = o["cam_pos"][cid] + np.asarray(jit[:3])
-                m.cam_quat[cid] = G.quat_mul(G.quat_from_rotvec(jit[3:]), o["cam_quat"][cid])
+                m.cam_quat[cid] = G.quat_mul(G.quat_from_rotvec(jit[3:6]), o["cam_quat"][cid])
+                if len(jit) > 6:
+                    m.cam_fovy[cid] = o["cam_fovy"][cid] * (1 + jit[6])  # intrinsics jitter
+        for nm, dp in (sc.light_jitter or {}).items():
+            if nm in self.light_ids:
+                m.light_pos[self.light_ids[nm]] = o["light_pos"][self.light_ids[nm]] + np.asarray(dp)
+        for g, mat in (sc.materials or {}).items():  # bench / mat texture variants
+            gid = m.geom(g).id
+            m.geom_matid[gid] = m.material(mat).id
         self.task.apply(self, sc.task)
         self._apply_regime(sc.regime)
 
@@ -270,6 +278,7 @@ class RoboGymEnv:
         self.time = 0.0
         self.step_count = 0
         self.last_action = np.zeros(ACT_DIM * len(self.arms))
+        self._obs_hist = []
         self._queue = np.zeros((MAX_DELAY, ACT_DIM * len(self.arms)))
         self._queue_n = 0
         self._sched_i = 0
@@ -517,9 +526,19 @@ class RoboGymEnv:
             p, q = self._tcp_pose(side)
             parts += [d.qpos[a["qadr"]], d.qvel[a["dadr"]], p, q, [self.grip_width(side)], self.wrench(side)]
         x = np.concatenate(parts).astype(np.float32)
-        if self.obs_noise > 0:
+        r = self.regime
+        if self.obs_noise > 0 or r.get("ft_noise", 0) > 0 or r.get("ft_bias", 0) != 0:
             rng = np.random.default_rng(zlib.crc32(f"{self.scenario.seed}/obs/{self.step_count}".encode()))
-            x = x + rng.normal(0, self.obs_noise, x.shape).astype(np.float32)
+            if self.obs_noise > 0:
+                x = x + rng.normal(0, self.obs_noise, x.shape).astype(np.float32)
+            for i in range(len(self.arms)):  # wrench dims 22..28 of each 28-block: Gaussian noise [N] + constant bias [N]
+                sl = slice(STATE_PER_ARM * i + 22, STATE_PER_ARM * i + 28)
+                x[sl] = x[sl] + rng.normal(0, r.get("ft_noise", 0.0), 6).astype(np.float32) + np.float32(r.get("ft_bias", 0.0))
+        d_obs = int(min(MAX_DELAY, max(0, r.get("obs_delay", 0))))
+        if d_obs > 0:  # sensing latency: report the observation from d_obs control steps ago
+            self._obs_hist.append(x)
+            self._obs_hist = self._obs_hist[-(MAX_DELAY + 1) :]
+            x = self._obs_hist[max(0, len(self._obs_hist) - 1 - d_obs)]
         return x
 
     def privileged(self) -> dict:
@@ -546,16 +565,34 @@ class RoboGymEnv:
             self._vopt = mujoco.MjvOption()
         return self._renderer
 
-    def render(self, camera: str, width=None, height=None, fx=True, ghost=False):
-        """Robot camera image incl. the scenario's sensor effects. `ghost` also draws goal ghosts (group 5)."""
+    def render(self, camera: str, width=None, height=None, fx=True, ghost=False, mode="rgb"):
+        """Robot camera image incl. the scenario's sensor effects. `ghost` also draws goal ghosts (group 5).
+        mode: "rgb" (uint8 HxWx3) | "depth" (float32 metres, HxW) | "seg" (int32 HxW geom ids, -1 = background)."""
         r = self._get_renderer(width or self.cfg.camera.width, height or self.cfg.camera.height)
         self._vopt.geomgroup[5] = 1 if ghost else 0
+        if mode == "depth":
+            r.enable_depth_rendering()
+            r.update_scene(self.data, camera=camera, scene_option=self._vopt)
+            out = r.render().copy()
+            r.disable_depth_rendering()
+            return out.astype(np.float32)
+        if mode == "seg":
+            r.enable_segmentation_rendering()
+            r.update_scene(self.data, camera=camera, scene_option=self._vopt)
+            out = r.render().copy()
+            r.disable_segmentation_rendering()
+            return out[..., 0].astype(np.int32)  # geom id (objtype in channel 1)
         r.update_scene(self.data, camera=camera, scene_option=self._vopt)
         img = r.render().copy()
         if fx and self.scenario is not None and self.scenario.image_fx:
             seed = zlib.crc32(f"{self.scenario.seed}/{camera}/{self.step_count}".encode())
             img = apply_image_fx(img, self.scenario.image_fx, seed)
         return img
+
+    def segmentation_labels(self):
+        """geom id -> (body name, geom name) for interpreting segmentation renders."""
+        m = self.model
+        return {g: (m.body(m.geom_bodyid[g]).name, m.geom(g).name) for g in range(m.ngeom)}
 
     def render_free(self, lookat=(0.45, 0, 0.1), distance=1.4, azimuth=140, elevation=-25, width=640, height=400, ghost=True):
         r = self._get_renderer(width, height)

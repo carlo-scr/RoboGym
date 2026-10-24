@@ -43,10 +43,12 @@ class EpisodeSpec:
     regime_schedule: list = field(default_factory=list)  # [[t_s, {regime overrides}], ...] inside the episode
     dart: float = 0.0  # DART noise (m / step on the active arm's translation; rotation 4x in rad)
     tag: str = ""  # free label (stream id, condition name, ...)
+    recover: bool = False  # the expert notices a failed subgoal and retries it (recovery demonstrations)
 
     def to_dict(self):
         return dict(seed=self.seed, category=self.category, failure=self.failure, severity=self.severity, shifts=list(self.shifts),
-                    shift_severity=self.shift_severity, variant=dict(self.variant), regime_schedule=list(self.regime_schedule), dart=self.dart, tag=self.tag)
+                    shift_severity=self.shift_severity, variant=dict(self.variant), regime_schedule=list(self.regime_schedule), dart=self.dart, tag=self.tag,
+                    recover=self.recover)
 
     @staticmethod
     def from_dict(d):
@@ -84,15 +86,20 @@ def make_plan(task, n: int, seed0: int = 0, mix=(("nominal", 0.6), ("known_failu
     return plan
 
 
-def build_episode(env: RoboGymEnv, spec: EpisodeSpec):
-    """Reset env for a spec; returns (scenario, failure, expert)."""
+def build_scenario(env: RoboGymEnv, spec: EpisodeSpec) -> Scenario:
     sc = sample_scenario(env.cfg, spec.seed, shifts=spec.shifts, severity=spec.shift_severity, variant=spec.variant, task=env.task)
     sc.regime_schedule = [list(x) for x in spec.regime_schedule]
+    return sc
+
+
+def build_episode(env: RoboGymEnv, spec: EpisodeSpec):
+    """Reset env for a spec; returns (scenario, failure, expert)."""
+    sc = build_scenario(env, spec)
     env.reset(sc)
     failure = None
     if spec.failure:
         failure = sample_failure(spec.failure, spec.severity, np.random.default_rng([spec.seed, 104729]), env.task, sc.task)
-    expert = env.task.make_expert(env, failure=failure, seed=spec.seed)
+    expert = env.task.make_expert(env, failure=failure, seed=spec.seed, recover=spec.recover)
     return sc, failure, expert
 
 
@@ -106,7 +113,7 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
     sc, failure, ex = build_episode(env, spec)
     task = env.task
     cameras = list(env.cfg.camera.record if cameras is None else cameras)
-    max_s = max_s or env.episode_max_s
+    max_s = max_s or env.episode_max_s * (1.6 if spec.recover else 1.0)  # recoveries replay a subgoal
     cols = ("t", "state", "action", "action_expert", "ee_target", "features", "phase", "subgoal", "stage", "progress", "grasped_k", "regime_id")
     rec = {k: [] for k in cols}
     extra = {}
@@ -171,7 +178,7 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
             ph = phase.split(f"{a_[0]}:")[-1].split("|")[0] if "|" in phase else phase
             if gks[a_] >= 0:
                 held_k[a_], ungrasped_n[a_] = gks[a_], 0
-            elif held_k[a_] >= 0 and holding_of(a_) and ph not in ("release", "retreat", "clear", "home", "done", "wait"):
+            elif held_k[a_] >= 0 and holding_of(a_) and ph not in ("release", "retreat", "clear", "home", "done", "wait", "notice"):
                 ungrasped_n[a_] += 1
                 if ungrasped_n[a_] == 3:
                     drops += 1
@@ -208,6 +215,7 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
         drops=drops,
         drop_times_s=drop_times,
         injection_time_s=_injection_time(ex, failure),
+        recoveries=_recoveries(ex.events),
         phase_events=ex.events,
         stage_times_s=stage_times,
         duration_s=round(env.time, 4),
@@ -218,6 +226,25 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
     data = {k: np.asarray(v) for k, v in rec.items()}
     data.update({k: np.asarray(v) for k, v in extra.items()})
     return dict(annotations=ann, data=data, frames=frames, physics=np.asarray(phys), aux=np.asarray(aux), actions64=np.asarray(act64), extra_cols=list(extra))
+
+
+def _recoveries(events):
+    """[{arm, subgoal, attempt, t_start, t_end, success}] from recover_start / recover_end events
+    (events are "arm:name" in bimanual runs; name = recover_start:k:attempt / recover_end:k:ok|fail)."""
+    out, open_ = [], {}
+    for name, t in events:
+        parts = name.split(":")
+        arm = None
+        if parts[0] in ("right", "left"):
+            arm, parts = parts[0], parts[1:]
+        if parts[0] == "recover_start":
+            open_[(arm, int(parts[1]))] = dict(arm=arm, subgoal=int(parts[1]), attempt=int(parts[2]), t_start=t, t_end=None, success=None)
+        elif parts[0] == "recover_end":
+            r = open_.pop((arm, int(parts[1])), dict(arm=arm, subgoal=int(parts[1]), attempt=0, t_start=None))
+            r.update(t_end=t, success=parts[2] == "ok")
+            out.append(r)
+    out += list(open_.values())
+    return out
 
 
 def _injection_time(ex, failure: FailureSpec | None):
@@ -314,6 +341,7 @@ def summary_row(ann: dict, path: str):
         episode=os.path.basename(path), path=path, task=ann["task"], seed=ann["spec"]["seed"], category=ann["category"], tag=ann["spec"].get("tag", ""),
         outcome=ann["outcome"], failure_mode=ann["failure_mode"], injected=inj.get("kind"), severity=inj.get("severity"),
         shifts="+".join(ann["shifts"]), shift_severity=ann.get("shift_severity"), regime_shift=len(ann.get("regime_schedule", [])) > 0,
+        recover=ann["spec"].get("recover", False), recoveries=len(ann.get("recoveries", [])), recovered=any(r.get("success") for r in ann.get("recoveries", [])),
         horizon=ann["horizon"], final_progress=ann["final_progress"], active_arm=ann["active_arm"], retries=ann["retries"], drops=ann["drops"],
         duration_s=ann["duration_s"], n_steps=ann["n_steps"], unstable=ann["unstable"],
     )

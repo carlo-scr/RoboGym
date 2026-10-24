@@ -136,8 +136,20 @@ def build_mjcf(cfg: EnvCfg, task_xml: str = "", task_assets=(), task_equality: s
     <material name="floor" texture="floor" texrepeat="2 2" texuniform="true" reflectance="0.05"/>
     <texture name="bench" type="2d" file="{T.wood()}"/>
     <material name="bench" texture="bench" texrepeat="1 1" texuniform="true" specular="0.2"/>
+    <texture name="bench_v1" type="2d" file="{T.wood(seed=1, base=(150, 105, 70))}"/>
+    <material name="bench_v1" texture="bench_v1" texrepeat="1 1" texuniform="true" specular="0.25"/>
+    <texture name="bench_v2" type="2d" file="{T.wood(seed=2, base=(190, 160, 120))}"/>
+    <material name="bench_v2" texture="bench_v2" texrepeat="1 1" texuniform="true" specular="0.15"/>
+    <texture name="bench_dark" type="2d" file="{T.wood(seed=3, base=(95, 70, 50))}"/>
+    <material name="bench_dark" texture="bench_dark" texrepeat="1 1" texuniform="true" specular="0.3"/>
     <texture name="mat" type="2d" file="{T.rubber_mat()}"/>
     <material name="mat" texture="mat" texrepeat="4 4" texuniform="true"/>
+    <texture name="mat_grey" type="2d" file="{T.rubber_mat(color=(120, 122, 126), seed=2)}"/>
+    <material name="mat_grey" texture="mat_grey" texrepeat="4 4" texuniform="true"/>
+    <texture name="mat_green" type="2d" file="{T.rubber_mat(color=(60, 90, 70), seed=3)}"/>
+    <material name="mat_green" texture="mat_green" texrepeat="4 4" texuniform="true"/>
+    <texture name="mat_blue" type="2d" file="{T.rubber_mat(color=(55, 70, 110), seed=4)}"/>
+    <material name="mat_blue" texture="mat_blue" texrepeat="4 4" texuniform="true"/>
     {xarm7.materials_xml()}
     {xarm7.mesh_assets()}
     {"".join(a_bg)}

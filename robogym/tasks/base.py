@@ -80,6 +80,10 @@ class Task:
     def horizon(self, sc: dict) -> int:
         return 1
 
+    def subgoal_done(self, env, k: int) -> bool:
+        """Subgoal k (cube k placed / brick k snapped at its goal / cable k latched) physically achieved."""
+        return False
+
     def task_features(self, env, pr: dict) -> np.ndarray:
         """Privileged low-dim features for state-based policies (fixed size, see feature_names)."""
         return np.zeros(0, np.float32)

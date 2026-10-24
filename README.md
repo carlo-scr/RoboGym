@@ -79,6 +79,28 @@ Every modelling assumption that is not measured on the real cell (mounting, came
 sizes, tolerances) is a field in [robogym/config.py](robogym/config.py); `make_cfg(task, **dotted)`
 or `RoboGymEnv(task, **dotted)` override it, e.g. `RoboGymEnv("lego", **{"task.scale": 2.0})`.
 
+## Learners, benchmark protocol and recovery data
+
+* **`robogym.learn`**: Diffusion Policy (state or image observations, chunked relative targets), frame
+  autoencoder, probabilistic latent world model with aleatoric / epistemic / NLL scores, a conformal
+  failure monitor, inference-time steering (best-of-K, tilted selection, abstention) and the RQ1 oracle
+  ranking that executes every candidate chunk from the same simulator state. `scripts/train_policy.py`
+  trains and evaluates on the test split; `scripts/rq1_oracle.py` runs the ranking;
+  `notebooks/03_learn_and_steer` chains everything (laptop smoke preset or Colab A100).
+* **`robogym.bench`**: versioned seed splits (train / cal / test / shift / stream), paired shift suites
+  (visual, physics, task-specific) at three severities, named regime conditions, Wilson intervals, paired
+  deltas with harm rates, detection metrics and a results JSON, so methods are compared the same way.
+* **Recovery demonstrations**: `EpisodeSpec(recover=True)` lets the expert notice a failed subgoal
+  (privileged) and redo it from the objects' current poses, with `recover_start` / `recover_end` labels.
+  Injected LEGO partial presses go from 1/4 to 4/4 recovered, cube drops from 2/4 to 3/4; cable
+  recoveries mostly fail (the plug is left in the jack, which the re-grasp does not handle yet).
+* **Sensing**: `render(cam, mode="depth" | "seg")`, wrist force-torque noise and bias, sensing latency
+  (regimes `ft_noise`, `ft_bias`, `obs_delay`), and wider nominal visual randomisation (bench and mat
+  textures, light poses, camera intrinsics).
+* **Real cell**: `robogym.real.RealXArmEnv` implements the same contract over the xArm SDK and
+  RealSense (a dry backend runs without hardware), records episodes in the same layout, and
+  `robogym.real.twin` measures sim-to-real divergence by replaying a recording. Untested on hardware.
+
 ## Expert success
 
 `scripts/benchmark_experts.py --n 40` (physics only; shifts at severity 0.7):
