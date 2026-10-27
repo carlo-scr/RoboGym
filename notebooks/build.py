@@ -18,6 +18,9 @@ BOOTSTRAP = os.path.join(HERE, "bootstrap_cell.py")
 # cell is replaced when it changes. Rebuild from src explicitly with --force.
 SPLICE_ONLY = {"03_learn_and_steer"}
 
+# Pipeline notebooks: always built without outputs (a stale error output would look like a current failure).
+NO_OUTPUTS = {"04_benchmark", "05_offtheshelf", "06_fast_a100"}
+
 # Notebooks derived from another source: the same cells with a different title cell and a code cell inserted
 # right before the bootstrap (environment variables the bootstrap reads, e.g. the branch and preset), so the
 # pipeline is kept in one file.
@@ -111,7 +114,7 @@ def build(src_path, out_path, title=None, preamble=None):
     """title: markdown lines replacing the first markdown cell; preamble: code lines inserted before the bootstrap cell.
     Embedded outputs of the existing notebook are carried over for code cells whose source did not change."""
     cells = []
-    old_outputs = _old_outputs(out_path)
+    old_outputs = {} if os.path.splitext(os.path.basename(out_path))[0] in NO_OUTPUTS else _old_outputs(out_path)
     for kind, lines in split_cells(open(src_path).read()):
         is_bootstrap = kind == "code" and lines and lines[0].strip() == "# @bootstrap"
         if is_bootstrap:
