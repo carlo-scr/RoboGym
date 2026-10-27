@@ -29,10 +29,27 @@ import importlib, subprocess, sys
 # verdict for the life of the kernel, so its modules are dropped first and the check re-imports them.
 
 
-def _lerobot_ready():
-    for _m in [m for m in sys.modules if m.split(".")[0] == "lerobot"]:
+def _drop_modules(*tops):
+    for _m in [m for m in sys.modules if m.split(".")[0] in tops]:
         del sys.modules[_m]
     importlib.invalidate_caches()
+
+
+def _unpoison_datasets():
+    """A kernel that imported `datasets`, dropped it and imports it again hits pyarrow's 'extension type already
+    defined'; unregister those types so the fresh import can register them."""
+    import pyarrow as pa
+
+    for n in ("Array2D", "Array3D", "Array4D", "Array5D"):
+        try:
+            pa.unregister_extension_type(f"datasets.features.features.{n}ExtensionType")
+        except Exception:  # noqa: BLE001
+            pass
+    _drop_modules("datasets")
+
+
+def _lerobot_ready(retry=True):
+    _drop_modules("lerobot")
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: F401  (needs datasets + av)
         import accelerate  # noqa: F401  (the trainer)
@@ -40,14 +57,18 @@ def _lerobot_ready():
     except ImportError as e:
         print("lerobot not ready:", e)
         return False
-    except Exception as e:  # noqa: BLE001  e.g. pyarrow "extension type already defined": a module was imported twice in this kernel
-        raise RuntimeError(f"the kernel state is broken ({type(e).__name__}: {str(e)[:120]}): Runtime > Restart session, then run all") from None
+    except Exception as e:  # noqa: BLE001
+        if retry and "already defined" in str(e):
+            _unpoison_datasets()
+            return _lerobot_ready(retry=False)
+        raise RuntimeError(f"the kernel state is broken ({type(e).__name__}: {str(e)[:120]}): restart the kernel (VS Code: the Restart button "
+                           "in the notebook toolbar; Colab: Runtime > Restart session), then run all") from None
 
 
 if not _lerobot_ready():
     print("installing lerobot[dataset,training] ...")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
-    assert _lerobot_ready(), "still failing after the install: Runtime > Restart session, then run again"
+    assert _lerobot_ready(), "still failing after the install: restart the kernel, then run all"
 
 # %%
 import json, os, time
