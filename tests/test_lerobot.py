@@ -27,7 +27,7 @@ def tiny_root(tmp_path_factory):
     return root
 
 
-@pytest.mark.parametrize("ptype,variant", [("act", "full"), ("vqbet", "front")])
+@pytest.mark.parametrize("ptype,variant", [("act", "full"), ("diffusion", "full"), ("vqbet", "front")])
 def test_export_train_run(tiny_root, tmp_path, ptype, variant):
     from robogym import lh
     from robogym.learn.lerobot_io import checkpoint_step, export_lerobot, train_lerobot
@@ -36,7 +36,8 @@ def test_export_train_run(tiny_root, tmp_path, ptype, variant):
     info = export_lerobot(tiny_root, tmp_path / f"lr_{variant}", f"test/robogym_{variant}", variant=variant, log=None)
     assert info["n_episodes"] == 2 and info["env_state"] == (variant == "full") and (tmp_path / f"lr_{variant}" / "meta" / "info.json").exists()
     assert export_lerobot(tiny_root, tmp_path / f"lr_{variant}", f"test/robogym_{variant}", variant=variant, log=None) == info  # idempotent
-    extra = ["--policy.n_vqvae_training_steps=2"] if ptype == "vqbet" else ["--policy.dim_model=64", "--policy.n_encoder_layers=1", "--policy.n_decoder_layers=1", "--policy.pretrained_backbone_weights=null"]
+    extra = {"vqbet": ["--policy.n_vqvae_training_steps=2"], "diffusion": ["--policy.down_dims=[32,64]", "--policy.diffusion_step_embed_dim=32"],
+             "act": ["--policy.dim_model=64", "--policy.n_encoder_layers=1", "--policy.n_decoder_layers=1", "--policy.pretrained_backbone_weights=null"]}[ptype]
     out = tmp_path / ptype
     d = train_lerobot(ptype, info, out, steps=4, batch_size=2, device="cpu", save_freq=2, num_workers=0, log_freq=2, extra=extra, log=None)
     assert checkpoint_step(out) == 4 and (d / "config.json").exists()

@@ -67,7 +67,7 @@ def _lerobot_ready(retry=True):
 
 if not _lerobot_ready():
     print("installing lerobot[dataset,training] ...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training,diffusion]", "av", "datasets", "accelerate"], check=True)
     assert _lerobot_ready(), "still failing after the install: restart the kernel, then run all"
 
 
@@ -78,13 +78,21 @@ def _trainer_imports():
     return r.returncode == 0, [ln for ln in r.stderr.strip().splitlines() if ln.strip()][-10:]
 
 
+# Colab's preinstalled packages clash with lerobot's in known ways; each remedy runs once, when its symptom shows in the import error
+_REMEDIES = [
+    ("cv2", "mixed opencv builds (Colab ships opencv-python + opencv-contrib-python, lerobot adds opencv-python-headless)",
+     [[sys.executable, "-m", "pip", "uninstall", "-q", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless", "opencv-contrib-python-headless"],
+      [sys.executable, "-m", "pip", "install", "-q", "opencv-python-headless"]]),
+    ("torchao", "the preinstalled torchao does not match diffusers (the Diffusion policy needs diffusers; nothing here needs torchao)",
+     [[sys.executable, "-m", "pip", "uninstall", "-q", "-y", "torchao"]]),
+]
 _ok, _err = _trainer_imports()
-if not _ok and any("cv2" in ln for ln in _err):
-    # Colab ships opencv-python + opencv-contrib-python; lerobot adds opencv-python-headless and the mixed builds break `import cv2`
-    print("fixing the opencv install (mixed builds):", *_err[-2:], sep="\n  ")
-    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-q", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless", "opencv-contrib-python-headless"], check=False)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "opencv-python-headless"], check=True)
-    _ok, _err = _trainer_imports()
+for _key, _why, _cmds in _REMEDIES:
+    if not _ok and any(_key in ln for ln in _err):
+        print(f"trainer import fails on {_key}: {_why}; fixing ...")
+        for _c in _cmds:
+            subprocess.run(_c, check=False)
+        _ok, _err = _trainer_imports()
 assert _ok, "the lerobot trainer does not import in a fresh process:\n" + "\n".join(_err)
 print("lerobot trainer imports OK")
 
