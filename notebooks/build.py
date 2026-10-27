@@ -14,8 +14,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "src")
 BOOTSTRAP = os.path.join(HERE, "bootstrap_cell.py")
 
+# Notebooks whose .ipynb is the executed copy (outputs worth keeping): not rebuilt from src; only the bootstrap
+# cell is replaced when it changes. Rebuild from src explicitly with --force.
+SPLICE_ONLY = {"03_learn_and_steer"}
+
 # Notebooks derived from another source: the same cells with a different title cell and a code cell inserted
-# right after the bootstrap (typically preselecting a preset), so the pipeline is kept in one file.
+# right before the bootstrap (environment variables the bootstrap reads, e.g. the branch and preset), so the
+# pipeline is kept in one file.
 VARIANTS = {
     "06_fast_a100": dict(
         src="05_offtheshelf.py",
@@ -91,8 +96,19 @@ def _old_outputs(out_path):
     return keep
 
 
+def splice_bootstrap(out_path):
+    """Replace the bootstrap cell of an existing notebook in place (everything else, outputs included, is kept)."""
+    nb = json.load(open(out_path))
+    boot = trim(open(BOOTSTRAP).read().split("\n"))
+    hits = [c for c in nb["cells"] if c["cell_type"] == "code" and "DEFAULT_REPO" in "".join(c["source"])]
+    assert len(hits) == 1, f"{out_path}: expected one bootstrap cell, found {len(hits)}"
+    hits[0].update(_cell("code", boot))
+    json.dump(nb, open(out_path, "w"), indent=1)
+    return out_path
+
+
 def build(src_path, out_path, title=None, preamble=None):
-    """title: markdown lines replacing the first markdown cell; preamble: code lines inserted after the bootstrap cell.
+    """title: markdown lines replacing the first markdown cell; preamble: code lines inserted before the bootstrap cell.
     Embedded outputs of the existing notebook are carried over for code cells whose source did not change."""
     cells = []
     old_outputs = _old_outputs(out_path)
@@ -105,9 +121,9 @@ def build(src_path, out_path, title=None, preamble=None):
             continue
         if title and kind == "markdown" and not any(c["cell_type"] == "markdown" for c in cells):
             lines = list(title)
-        cells.append(_cell(kind, lines))
         if is_bootstrap and preamble:
             cells.append(_cell("code", list(preamble)))
+        cells.append(_cell(kind, lines))
     for c in cells:
         if c["cell_type"] == "code" and old_outputs.get("".join(c["source"])):
             c["outputs"], c["execution_count"] = old_outputs["".join(c["source"])].pop(0)
@@ -134,11 +150,16 @@ def main():
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--only", default=None)
     ap.add_argument("--timeout", type=int, default=3600)
+    ap.add_argument("--force", action="store_true", help="also rebuild the SPLICE_ONLY notebooks from their sources")
     a = ap.parse_args()
     for fn in sorted(os.listdir(SRC)):
         if not fn.endswith(".py") or (a.only and a.only not in fn):
             continue
-        out = build(os.path.join(SRC, fn), os.path.join(HERE, fn[:-3] + ".ipynb"))
+        out = os.path.join(HERE, fn[:-3] + ".ipynb")
+        if fn[:-3] in SPLICE_ONLY and os.path.exists(out) and not a.force:
+            print("kept (bootstrap spliced)", os.path.relpath(splice_bootstrap(out)))
+            continue
+        out = build(os.path.join(SRC, fn), out)
         print("built", os.path.relpath(out))
         if a.execute:
             subprocess.run([sys.executable, "-m", "nbconvert", "--to", "notebook", "--execute", "--inplace", f"--ExecutePreprocessor.timeout={a.timeout}", out],

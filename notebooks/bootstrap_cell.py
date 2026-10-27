@@ -51,10 +51,15 @@ if IN_COLAB:
         _icd.write_text('{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}\n')
     CODE = pathlib.Path("/content/RoboGym")
     DRIVE = pathlib.Path("/content/drive/MyDrive")
-    if (CODE / ".git").exists():
+    if (CODE / ".git").exists():  # update the existing clone to the wanted branch (fetch + hard reset: no merge state to get stuck in)
         tok = _github_token()
-        pull_url = ROBOGYM_REPO.replace("https://github.com/", f"https://x-access-token:{tok}@github.com/") if tok and "@" not in ROBOGYM_REPO else ROBOGYM_REPO
-        subprocess.run(["git", "-C", str(CODE), "pull", "-q", pull_url] + ([ROBOGYM_BRANCH] if ROBOGYM_BRANCH else []), env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        url = ROBOGYM_REPO.replace("https://github.com/", f"https://x-access-token:{tok}@github.com/") if tok and "@" not in ROBOGYM_REPO else ROBOGYM_REPO
+        genv = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        r = subprocess.run(["git", "-C", str(CODE), "fetch", "-q", url, ROBOGYM_BRANCH or "HEAD"], capture_output=True, text=True, env=genv)
+        if r.returncode == 0:
+            subprocess.run(["git", "-C", str(CODE), "reset", "-q", "--hard", "FETCH_HEAD"], check=True)
+        else:
+            print("warning: could not update the clone:", (r.stderr.replace(tok, "***") if tok else r.stderr).strip()[:200])
     if not (CODE / "robogym").exists():
         if CODE.exists():
             subprocess.run(["rm", "-rf", str(CODE)])  # a clone that failed half-way
@@ -76,6 +81,8 @@ if IN_COLAB:
                 subprocess.run(["rm", "-rf", str(link)])
                 link.symlink_to(tgt)
     os.chdir(CODE)
+    for _m in [m for m in sys.modules if m == "robogym" or m.startswith("robogym.")]:
+        del sys.modules[_m]  # a rerun in the same kernel must import the updated code
 ROOT = pathlib.Path.cwd()
 while not (ROOT / "robogym").exists() and ROOT != ROOT.parent:
     ROOT = ROOT.parent
