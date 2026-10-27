@@ -40,6 +40,8 @@ def _lerobot_ready():
     except ImportError as e:
         print("lerobot not ready:", e)
         return False
+    except Exception as e:  # noqa: BLE001  e.g. pyarrow "extension type already defined": a module was imported twice in this kernel
+        raise RuntimeError(f"the kernel state is broken ({type(e).__name__}: {str(e)[:120]}): Runtime > Restart session, then run all") from None
 
 
 if not _lerobot_ready():
