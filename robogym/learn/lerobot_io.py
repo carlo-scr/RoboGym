@@ -12,6 +12,8 @@ Actions are the env's delta actions; with DART data the label is the expert's cl
 """
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import json
 import shutil
 import sys
@@ -72,8 +74,10 @@ def export_lerobot(data_root, out_root, repo_id, variant="full", fps=20.0, only_
         features["observation.environment_state"] = {"dtype": "float32", "shape": (E,), "names": list(fr["task_feature_names"])}
     for c in cams:
         features[f"observation.images.{c}"] = {"dtype": "video" if use_videos else "image", "shape": (H, W, 3), "names": ["height", "width", "channels"]}
-    ds = LeRobotDataset.create(repo_id, fps=int(round(fps)), features=features, root=out_root, robot_type="xarm7", use_videos=use_videos,
-                               image_writer_threads=image_writer_threads, vcodec=vcodec)
+    kw = dict(image_writer_threads=image_writer_threads)
+    if "vcodec" in inspect.signature(LeRobotDataset.create).parameters:  # lerobot <= 0.4; 0.6 picks the encoder itself
+        kw["vcodec"] = vcodec
+    ds = LeRobotDataset.create(repo_id, fps=int(round(fps)), features=features, root=out_root, robot_type="xarm7", use_videos=use_videos, **kw)
     t0, n_frames = time.time(), 0
     for i, p in enumerate(paths):
         ep = probe if i == 0 else load_episode_arrays(p, cams=cams, frames=True)
@@ -125,6 +129,14 @@ def prune_checkpoints(out_dir, keep=1) -> int:
     return n
 
 
+def _no_env_eval_flag() -> str:
+    """The training flag that disables environment evaluation: `eval_freq` up to lerobot 0.4, `env_eval_freq` from 0.6."""
+    from lerobot.configs.train import TrainPipelineConfig
+
+    names = {f.name for f in dataclasses.fields(TrainPipelineConfig)}
+    return "--env_eval_freq=0" if "env_eval_freq" in names else "--eval_freq=0"
+
+
 def train_lerobot(policy_type, dataset_info: dict, out_dir, steps, batch_size=8, device="cpu", save_freq=None, num_workers=2, log_freq=None, extra=(), pretrained=None,
                   python=None, log=print, log_path=None):
     """Run `lerobot-train` for `steps` (resumes from checkpoints/last if the run was interrupted; returns
@@ -148,7 +160,7 @@ def train_lerobot(policy_type, dataset_info: dict, out_dir, steps, batch_size=8,
             shutil.rmtree(out_dir)  # a run that died before its first checkpoint
         pol = [f"--policy.path={pretrained or PRETRAINED[policy_type]}"] if (pretrained or policy_type in PRETRAINED) else [f"--policy.type={policy_type}"]
         cmd = base + [f"--dataset.repo_id={dataset_info['repo_id']}", f"--dataset.root={root}", *pol, f"--policy.device={device}", "--policy.push_to_hub=false",
-                      f"--output_dir={out_dir}", f"--steps={steps}", f"--batch_size={batch_size}", f"--save_freq={save_freq or max(50, steps // 10)}", "--eval_freq=0",
+                      f"--output_dir={out_dir}", f"--steps={steps}", f"--batch_size={batch_size}", f"--save_freq={save_freq or max(50, steps // 10)}", _no_env_eval_flag(),
                       f"--log_freq={log_freq or max(10, steps // 50)}", f"--num_workers={num_workers}", "--wandb.enable=false", *POLICY_ARGS.get(policy_type, []), *extra]
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     run_live(cmd, cwd=str(out_dir.parent), skip=("Warning", "warn"), sink=log_path)

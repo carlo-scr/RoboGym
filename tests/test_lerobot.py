@@ -42,6 +42,8 @@ def test_export_train_run(tiny_root, tmp_path, ptype, variant):
     assert checkpoint_step(out) == 4 and (d / "config.json").exists()
     assert sorted(p.name for p in (out / "checkpoints").iterdir()) == ["000004", "last"]  # step-2 checkpoint pruned
     assert train_lerobot(ptype, info, out, steps=4, batch_size=2, device="cpu", log=None) == d  # already done
+    train_lerobot(ptype, info, out, steps=6, batch_size=2, device="cpu", save_freq=2, num_workers=0, log_freq=2, extra=extra, log=None)  # resume 4 -> 6
+    assert checkpoint_step(out) == 6 and sorted(p.name for p in (out / "checkpoints").iterdir()) == ["000006", "last"]
     pol = make_policy(f"lerobot:{out}")
     assert isinstance(pol, LeRobotPolicy) and pol.name == f"lerobot_{ptype}" and pol.needs_render and pol.cams == tuple(info["cams"])
     env = RoboGymEnv("cube_stack", render=True)

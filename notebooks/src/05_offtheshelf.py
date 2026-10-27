@@ -23,11 +23,13 @@
 
 # %%
 import importlib.util, subprocess, sys
-# lerobot plus its dataset extra: the dataset module needs PyAV (`av`) and `datasets`, which a bare `pip install lerobot` leaves out
-_missing = [m for m in ("lerobot", "av", "datasets") if importlib.util.find_spec(m) is None]
+# lerobot 0.6 splits its dependencies into extras: the dataset module needs `datasets` and PyAV (`av`), the trainer
+# needs `accelerate`; a bare `pip install lerobot` leaves all three out (0.4 had them as core deps: the extras then
+# only produce a warning). Check the packages themselves, not just lerobot.
+_missing = [m for m in ("lerobot", "av", "datasets", "accelerate") if importlib.util.find_spec(m) is None]
 if _missing:
-    print("installing lerobot[dataset] (missing:", ", ".join(_missing), ") ...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset]", "av", "datasets"], check=True)  # (older lerobot has no such extra: harmless warning)
+    print("installing lerobot[dataset,training] (missing:", ", ".join(_missing), ") ...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
     importlib.invalidate_caches()
 
 # %%
