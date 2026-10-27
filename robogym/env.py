@@ -500,6 +500,21 @@ class RoboGymEnv:
                 return s
         return None
 
+    def holders(self, geoms: set) -> list:
+        """Every arm whose two fingers touch the object (both, during a hand-over)."""
+        t = self.touching(geoms)
+        return [s for s in self.arms if len(t[s]) == 2]
+
+    def supported(self, geoms: set) -> bool:
+        """The object touches something other than finger pads (bench, another object, ...)."""
+        d = self.data
+        pads = set().union(*[self.arm[s]["all_pads"] for s in self.arms])
+        for c in d.contact[: d.ncon]:
+            g1, g2 = c.geom1, c.geom2
+            if (g1 in geoms and g2 not in pads and g2 not in geoms) or (g2 in geoms and g1 not in pads and g1 not in geoms):
+                return True
+        return False
+
     def contact_force(self, geoms_a: set, geoms_b: set | None = None) -> np.ndarray:
         """Total contact force (world) on geoms_a from geoms_b (or from everything)."""
         m, d = self.model, self.data
@@ -555,6 +570,37 @@ class RoboGymEnv:
 
     def task_features(self, pr: dict | None = None) -> np.ndarray:
         return self.task.task_features(self, pr or self.privileged())
+
+    def safety(self) -> dict:
+        """Safety signals for monitors: joint_limit_margin (rad, min over arms), torque_sat (fraction of arm
+        actuators at their force limit), arm_clearance (m, closest approach between the two robots incl.
+        grippers; inf with one arm), would_collide (arm_clearance < 5 mm: the arm *links* of the two robots
+        do not collide in the physics, so this flags the contacts the sim does not resolve), tcp_speed
+        (m/s, max over arms). ~4 ms per call with two arms."""
+        m, d = self.model, self.data
+        margin, sat, speed = np.inf, 0.0, 0.0
+        for side in self.arms:
+            a = self.arm[side]
+            q = d.qpos[a["qadr"]]
+            margin = min(margin, float(np.min(np.minimum(q - a["lo"], a["hi"] - q))))
+            f, lim = d.actuator_force[a["act"]], m.actuator_forcerange[a["act"], 1]
+            sat += float(np.mean(np.abs(f) >= 0.98 * lim)) / len(self.arms)
+            mujoco.mj_jacSite(m, d, self._jacp, self._jacr, a["tcp"])
+            speed = max(speed, float(np.linalg.norm(self._jacp @ d.qvel)))
+        clearance = np.inf
+        if len(self.arms) == 2:
+            if not hasattr(self, "_arm_geoms"):
+                self._arm_geoms = {s_: [g for g in range(m.ngeom) if m.geom(g).name.startswith(f"{s_[0]}_") and m.geom_contype[g] != 0] for s_ in self.arms}
+            ga, gb = self._arm_geoms[self.arms[0]], self._arm_geoms[self.arms[1]]
+            pa, pb = d.geom_xpos[ga], d.geom_xpos[gb]
+            ra, rb = m.geom_rbound[ga], m.geom_rbound[gb]
+            D = np.linalg.norm(pa[:, None] - pb[None], axis=-1) - ra[:, None] - rb[None]  # bounding-sphere lower bound
+            close = np.argwhere(D < 0.08)
+            clearance = float(D.min()) if len(close) == 0 else np.inf
+            fromto = np.zeros(6)
+            for i, j in close[:60]:
+                clearance = min(clearance, float(mujoco.mj_geomDistance(m, d, int(ga[i]), int(gb[j]), 0.2, fromto)))
+        return dict(joint_limit_margin=margin, torque_sat=sat, arm_clearance=clearance, would_collide=bool(clearance < 0.005), tcp_speed=speed)
 
     # ------------------------------------------------------------------ rendering
     def _get_renderer(self, w, h):

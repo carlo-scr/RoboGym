@@ -51,12 +51,29 @@ def edge_weights(x, strength):
     return 1 + strength * (m / 10).clamp(max=1)
 
 
-def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device="cpu", log=print, log_every=500, edge=0.0):
+def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device="cpu", log=print, log_every=500, edge=0.0, ckpt_dir=None, ckpt_every=1000,
+             budget_s=None):
+    """ckpt_dir / ckpt_every / budget_s: checkpoint and resume as in robogym.learn.policy.train_policy."""
+    from pathlib import Path
+
+    from .ckpt import load_ckpt, rng_state, save_ckpt, set_rng_state
+
     ae = ConvAE(frames.shape[1:3], latent).to(device)
     opt = torch.optim.AdamW(ae.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
     t0, hist = time.time(), []
-    for it in range(steps):
+    start = 0
+    ck = Path(ckpt_dir) / "ckpt.pt" if ckpt_dir else None
+    st = load_ckpt(ck, device) if ck else None
+    if st is not None and st["steps"] == steps:
+        ae.load_state_dict(st["model"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        hist, start = list(st["hist"]), int(st["step"])
+        set_rng_state(st.get("rng"))
+        if log:
+            log(f"[ae] resumed from {ck} at step {start}/{steps}")
+    for it in range(start, steps):
         j = np.random.randint(0, len(frames), bs)
         x = ae._x(frames[j]).to(device)
         err = (ae.decode(ae.forward_latent(x)) - x) ** 2
@@ -72,6 +89,12 @@ def train_ae(frames: np.ndarray, latent=32, steps=3000, bs=128, lr=1e-3, device=
         hist.append(err.mean().item())
         if log and (it % log_every == 0 or it == steps - 1):
             log(f"[ae] step {it:5d}  mse {np.mean(hist[-log_every:]):.5f}  ({time.time() - t0:.0f}s)")
+        if ck is not None and ((it + 1) % ckpt_every == 0 or it == steps - 1):
+            save_ckpt(ck, dict(step=it + 1, steps=steps, model=ae.state_dict(), opt=opt.state_dict(), sched=sched.state_dict(), hist=hist, rng=rng_state()))
+            if budget_s is not None and time.time() - t0 > budget_s and it < steps - 1:
+                if log:
+                    log(f"[ae] time budget reached at step {it + 1}/{steps}; checkpoint written")
+                break
     return ae.eval(), hist
 
 

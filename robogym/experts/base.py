@@ -146,10 +146,11 @@ class Expert:
         return a.reshape(-1)
 
     # ------------------------------------------------------------------ recovery
-    def subgoal_with_recovery(self, k, do_subgoal):
+    def subgoal_with_recovery(self, k, do_subgoal, retry=None):
         """Run `do_subgoal(k)` (a generator); if the task reports the subgoal not achieved and recovery is on,
-        retry it from the objects' current poses (up to max_recoveries), logging recover_start / recover_end
-        events with the outcome. The injected failure is switched off for the retries."""
+        retry it (`retry(k)`, default the same generator) from the objects' current poses, up to
+        max_recoveries, logging recover_start / recover_end events with the outcome. The injected failure is
+        switched off for the retries."""
         yield from do_subgoal(k)
         if not self.recover:
             return
@@ -159,7 +160,7 @@ class Expert:
             self.recovering = True
             self.event(f"recover_start:{k}:{attempt}")
             yield from self.hold(0.2, phase="notice")
-            yield from do_subgoal(k)
+            yield from (retry or do_subgoal)(k)
             ok = self.env.task.subgoal_done(self.env, k)
             self.event(f"recover_end:{k}:{'ok' if ok else 'fail'}")
             if ok:
@@ -180,6 +181,15 @@ class Expert:
                     break
                 yield self._action()
         self.coord.enter(self.arm, k)
+
+    def wait_until(self, pred, phase=None, max_s: float = 60.0):
+        """Hold the current pose until `pred()` is true (hand-over protocol, waiting for the other arm)."""
+        if phase and phase != self.phase:
+            self.start_phase(phase)
+        for _ in range(int(max_s / self.env.dt)):
+            if pred():
+                return
+            yield self._action()
 
     def turn_done(self, k: int):
         if self.coord is not None:

@@ -105,9 +105,14 @@ def _stack_windows(episodes, H):
 
 
 def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3, device="cpu", log=print, log_every=1000,
-             val=None, init=None, min_log_std=-6.0, max_val=20000):
+             val=None, init=None, min_log_std=-6.0, max_val=20000, ckpt_dir=None, ckpt_every=1000, budget_s=None):
     """episodes: list of dict(x [T,D], action [T,A]). `val` held-out episodes keep the best weights by NLL;
-    `init` fine-tunes an existing LatentWM (normalisation kept, so NLLs stay comparable)."""
+    `init` fine-tunes an existing LatentWM (normalisation kept, so NLLs stay comparable).
+    ckpt_dir / ckpt_every / budget_s: checkpoint and resume as in robogym.learn.policy.train_policy."""
+    from pathlib import Path
+
+    from .ckpt import load_ckpt, rng_state, save_ckpt, set_rng_state
+
     HX, HA, AN, D = _stack_windows(episodes, H)
     if init is None:
         wm = LatentWM(HX.shape[-1], AN.shape[-1], H, n_members, hidden, min_log_std)
@@ -127,7 +132,19 @@ def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3
     opt = torch.optim.AdamW(wm.parameters(), lr=lr, weight_decay=1e-5)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
     n, t0, hist = len(HX), time.time(), []
-    for it in range(steps):
+    start = 0
+    ck = Path(ckpt_dir) / "ckpt.pt" if ckpt_dir else None
+    st = load_ckpt(ck, device) if ck else None
+    if st is not None and st["steps"] == steps:
+        wm.load_state_dict(st["model"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        hist, start, wm.val_hist = list(st["hist"]), int(st["step"]), list(st["val_hist"])
+        best = (st["best_val"], st["best_state"])
+        set_rng_state(st.get("rng"))
+        if log:
+            log(f"[wm] resumed from {ck} at step {start}/{steps}")
+    for it in range(start, steps):
         loss = 0
         for m_i in range(n_members):
             j = torch.randint(0, n, (bs,), device=device)
@@ -150,6 +167,13 @@ def train_wm(episodes, H=2, n_members=5, hidden=512, steps=4000, bs=512, lr=1e-3
                 msg = f"  val {v:.4f}" + (" *" if best[0] == v else "")
             if log:
                 log(f"[wm] step {it:5d}  nll {np.mean(hist[-log_every:]):.4f}{msg}  ({time.time() - t0:.0f}s)")
+        if ck is not None and ((it + 1) % ckpt_every == 0 or it == steps - 1):
+            save_ckpt(ck, dict(step=it + 1, steps=steps, model=wm.state_dict(), opt=opt.state_dict(), sched=sched.state_dict(), hist=hist, val_hist=wm.val_hist,
+                               best_val=best[0], best_state=best[1], rng=rng_state()))
+            if budget_s is not None and time.time() - t0 > budget_s and it < steps - 1:
+                if log:
+                    log(f"[wm] time budget reached at step {it + 1}/{steps}; checkpoint written")
+                return wm.eval(), hist
     if best[1] is not None:
         wm.load_state_dict(best[1])
     return wm.eval(), hist

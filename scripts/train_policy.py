@@ -3,6 +3,7 @@
 
     python scripts/train_policy.py --data data/cubes_train --task cube_stack --out runs/dp_cubes_state --steps 20000
     python scripts/train_policy.py --data data/cubes_train --task cube_stack --obs image --cams right_wrist front --out runs/dp_cubes_img
+    python scripts/train_policy.py --data data/cubes_train --task cube_stack --arch act --out runs/act_cubes_state   # or --arch mlp
 
 Writes policy.pt, train.json (loss curve) and eval.json (success / progress on `--eval-n` test seeds).
 """
@@ -28,6 +29,7 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--task", default="cube_stack")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--arch", default="dp", choices=["dp", "act", "mlp"], help="Diffusion Policy | Action Chunking Transformer | chunked MLP")
     ap.add_argument("--obs", default="state", choices=["state", "image"])
     ap.add_argument("--action", default="rel", choices=["rel", "abs", "delta"])
     ap.add_argument("--cams", nargs="*", default=["right_wrist", "front"])
@@ -52,7 +54,7 @@ def main():
     paths = idx.path.tolist()[: a.max_episodes]
     eps = load_many(paths, cams=a.cams if a.obs == "image" else (), frames=a.obs == "image")
     n_arms = eps[0]["n_arms"]
-    cfg = PolicyCfg(obs_mode=a.obs, action_mode=a.action, n_arms=n_arms, task_dim=eps[0]["task"].shape[1], cams=tuple(a.cams), img_hw=tuple(a.img_hw), down_dims=tuple(a.dims))
+    cfg = PolicyCfg(arch=a.arch, obs_mode=a.obs, action_mode=a.action, n_arms=n_arms, task_dim=eps[0]["task"].shape[1], cams=tuple(a.cams), img_hw=tuple(a.img_hw), down_dims=tuple(a.dims))
     print(f"{len(eps)} episodes, {sum(len(e['state']) for e in eps)} steps, n_arms {n_arms}, task_dim {cfg.task_dim}")
     t0 = time.time()
     pol, hist = train_policy(eps, cfg, steps=a.steps, bs=a.bs, lr=a.lr, device=a.device)
@@ -72,7 +74,7 @@ def main():
         rows.append(dict(seed=sp.seed, success=r["success"], progress=r["progress"], duration=r["duration"]))
         print(f"  test seed {sp.seed}: success={r['success']} progress={r['progress']:.2f} t={r['duration']:.1f}s")
     succ = bench.rate([r["success"] for r in rows])
-    res = bench.Results(name=out.name, task=a.task, method=f"diffusion_policy_{a.obs}_{a.action}", config=dict(steps=a.steps, n_episodes=len(eps)))
+    res = bench.Results(name=out.name, task=a.task, method=f"{a.arch}_{a.obs}_{a.action}", config=dict(steps=a.steps, n_episodes=len(eps)))
     res.add(split="test", metric="success", **succ, progress=float(np.mean([r["progress"] for r in rows])))
     res.save(out / "eval.json")
     print(f"test success {succ['rate']:.2f} [{succ['lo']:.2f}, {succ['hi']:.2f}] (n={succ['n']}), mean progress {np.mean([r['progress'] for r in rows]):.2f}")

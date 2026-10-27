@@ -101,17 +101,30 @@ def chunk_then_expert(env: RoboGymEnv, ex, chunk, max_s=None):
     return finish(env, ex, max_s=max_s)
 
 
-def run_live(cmd, cwd=None, skip=("WARNING",)):
-    """Run a script and stream its output into the notebook (raise with the tail of the log on failure)."""
+def run_live(cmd, cwd=None, skip=("WARNING",), sink=None):
+    """Run a script and stream its output into the notebook (raise with the tail of the log on failure).
+    `sink`: a file path; the output then goes there (line-buffered) instead of the notebook."""
     import subprocess
 
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=cwd)
     tail = []
-    for line in p.stdout:
-        if any(k in line for k in skip):
-            continue
-        print(line, end="", flush=True)
-        tail = (tail + [line])[-40:]
+    if sink:
+        from pathlib import Path
+
+        Path(sink).parent.mkdir(parents=True, exist_ok=True)
+    f = open(sink, "a", buffering=1) if sink else None
+    try:
+        for line in p.stdout:
+            if any(k in line for k in skip):
+                continue
+            if f:
+                f.write(line)
+            else:
+                print(line, end="", flush=True)
+            tail = (tail + [line])[-40:]
+    finally:
+        if f:
+            f.close()
     rc = p.wait()
     if rc:
         raise RuntimeError(f"command failed (exit {rc}); last lines:\n" + "".join(tail))

@@ -16,7 +16,7 @@ from .. import geometry as G
 from ..scene import PARK
 from .base import Task, register
 
-KINDS = {"2x2": (2, 2), "2x4": (2, 4)}
+KINDS = {"1x2": (1, 2), "1x4": (1, 4), "2x2": (2, 2), "2x3": (2, 3), "2x4": (2, 4)}  # (studs along x, along y)
 PALETTE = {"red": (0.85, 0.12, 0.12, 1), "yellow": (0.97, 0.8, 0.1, 1), "blue": (0.1, 0.35, 0.85, 1), "green": (0.15, 0.6, 0.25, 1)}
 NOMINAL_COLORS = tuple(PALETTE)
 SUB = ("reach", "grasp", "carry", "align", "press")

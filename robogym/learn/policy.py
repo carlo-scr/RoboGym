@@ -14,6 +14,7 @@ import copy
 import math
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -133,6 +134,7 @@ def abs_chunk_to_deltas(chunk, targets, arms):
 
 @dataclass
 class PolicyCfg:
+    arch: str = "dp"  # "dp" (Diffusion Policy) | "act" (Action Chunking Transformer) | "mlp" (chunked behaviour cloning)
     obs_mode: str = "state"  # "state" | "image"
     action_mode: str = "rel"  # "rel" | "abs" | "delta"
     n_arms: int = 1
@@ -149,6 +151,15 @@ class PolicyCfg:
     prediction: str = "sample"
     ddim_steps: int = 10
     ddim_eta: float = 1.0
+    # ACT / MLP (robogym.learn.archs)
+    d_model: int = 256
+    n_heads: int = 8
+    n_enc: int = 3
+    n_dec: int = 3
+    latent: int = 32
+    kl_weight: float = 10.0
+    z_sample: bool = False  # ACT: draw the style latent from the prior per candidate (else z = 0, deterministic)
+    mlp_hidden: int = 1024
 
     @property
     def state_dim(self):
@@ -325,6 +336,16 @@ class DiffusionPolicy(nn.Module):
         return x.view(B, K, cfg.horizon, self.act_dim)
 
 
+def make_model(cfg: PolicyCfg) -> nn.Module:
+    """The chunk policy for cfg.arch; every architecture shares the DiffusionPolicy interface
+    (cfg, obs_norm, act_norm, loss(low, act, imgs), sample(low, imgs, K, ...) -> [B, K, horizon, act_dim])."""
+    if cfg.arch == "dp":
+        return DiffusionPolicy(cfg)
+    from .archs import ACTPolicy, MLPChunkPolicy
+
+    return {"act": ACTPolicy, "mlp": MLPChunkPolicy}[cfg.arch](cfg)
+
+
 # ---------------------------------------------------------------------- data
 def make_windows(episodes, cfg: PolicyCfg):
     lows, acts, idx = [], [], []
@@ -361,13 +382,19 @@ def make_windows(episodes, cfg: PolicyCfg):
     return np.asarray(lows, np.float32), np.asarray(acts, np.float32), idx
 
 
-def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="cpu", log_every=250, log=print, seed=0):
+def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="cpu", log_every=250, log=print, seed=0, ckpt_dir=None, ckpt_every=1000,
+                 budget_s=None):
+    """ckpt_dir: write `ckpt.pt` every ckpt_every steps and resume from it (same `steps`) if it exists;
+    budget_s: stop after the next checkpoint once this much wall time has passed (the returned history is then
+    shorter than `steps`: call again to continue). Interrupted runs lose at most ckpt_every steps."""
+    from .ckpt import load_ckpt, rng_state, save_ckpt, set_rng_state
+
     torch.manual_seed(seed)
     np.random.seed(seed)
     if cfg.obs_mode == "state" and cfg.task_dim == 0:
         cfg.task_dim = episodes[0]["task"].shape[1]
     lows, acts, idx = make_windows(episodes, cfg)
-    pol = DiffusionPolicy(cfg)
+    pol = make_model(cfg)
     pol.obs_norm.fit(lows)
     pol.act_norm.fit(acts, robust=cfg.action_mode == "rel")
     L = torch.as_tensor(pol.obs_norm.norm(lows), device=device)
@@ -382,7 +409,20 @@ def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="
     hist, t0 = [], time.time()
     n = len(L)
     p_ema, p_pol = list(ema.parameters()), list(pol.parameters())
-    for it in range(steps):
+    start = 0
+    ck = Path(ckpt_dir) / "ckpt.pt" if ckpt_dir else None
+    st = load_ckpt(ck, device) if ck else None
+    if st is not None and st["steps"] == steps:
+        pol.load_state_dict(st["model"])
+        ema.load_state_dict(st["ema"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        hist = [torch.tensor(h, device=device) for h in st["hist"]]
+        start = int(st["step"])
+        set_rng_state(st.get("rng"))
+        if log:
+            log(f"[policy] resumed from {ck} at step {start}/{steps}")
+    for it in range(start, steps):
         j = torch.randint(0, n, (bs,), device=device) if frames is None else np.random.randint(0, n, bs)
         imgs = None
         if frames is not None:
@@ -401,6 +441,13 @@ def train_policy(episodes, cfg: PolicyCfg, steps=3000, bs=256, lr=3e-4, device="
         hist.append(loss.detach())
         if log and (it % log_every == 0 or it == steps - 1):
             log(f"[policy] step {it:5d}  loss {torch.stack(hist[-log_every:]).mean().item():.4f}  ({time.time() - t0:.0f}s)")
+        if ck is not None and ((it + 1) % ckpt_every == 0 or it == steps - 1):
+            save_ckpt(ck, dict(step=it + 1, steps=steps, model=pol.state_dict(), ema=ema.state_dict(), opt=opt.state_dict(), sched=sched.state_dict(),
+                               hist=[float(h) for h in hist], rng=rng_state(), cfg=asdict(cfg)))
+            if budget_s is not None and time.time() - t0 > budget_s and it < steps - 1:
+                if log:
+                    log(f"[policy] time budget reached at step {it + 1}/{steps}; checkpoint written, call again to continue")
+                break
     ema.obs_norm, ema.act_norm = pol.obs_norm, pol.act_norm
     return ema.eval(), torch.stack(hist).cpu().numpy().tolist()
 
@@ -409,10 +456,10 @@ def save_policy(pol: DiffusionPolicy, path):
     torch.save(dict(cfg=asdict(pol.cfg), state=pol.state_dict(), obs_norm=pol.obs_norm.state_dict(), act_norm=pol.act_norm.state_dict()), path)
 
 
-def load_policy(path, device="cpu") -> DiffusionPolicy:
+def load_policy(path, device="cpu") -> nn.Module:
     ck = torch.load(path, map_location=device, weights_only=False)
     cfg = PolicyCfg(**{k: tuple(v) if isinstance(v, list) else v for k, v in ck["cfg"].items()})
-    pol = DiffusionPolicy(cfg)
+    pol = make_model(cfg)
     pol.load_state_dict(ck["state"])
     pol.obs_norm, pol.act_norm = Normalizer.from_state(ck["obs_norm"]), Normalizer.from_state(ck["act_norm"])
     return pol.to(device).eval()
@@ -424,8 +471,11 @@ class PolicyRunner:
     Candidate chunks are seeded per (episode, replan, candidate) through `seed_for` so that candidate 0
     is identical for the base policy and any steering method (see robogym.research.seed_for)."""
 
-    def __init__(self, pol: DiffusionPolicy, env, device="cpu", seed=0):
+    def __init__(self, pol, env, device="cpu", seed=0, features=None):
+        """`features(env) -> np.ndarray` replaces env.task_features() in the observation (state mode): a
+        hierarchical executor passes the *planned* subgoal's features instead of the env's own."""
         self.pol, self.env, self.device, self.seed = pol, env, device, seed
+        self.features = features
         self.arms = tuple(env.arms)
         self.gen = torch.Generator(device=device).manual_seed(seed)
         self.reset()
@@ -438,7 +488,7 @@ class PolicyRunner:
 
     def _obs(self):
         env, cfg = self.env, self.pol.cfg
-        parts = [env.observe()] + ([env.task_features()] if cfg.obs_mode == "state" else [])
+        parts = [env.observe()] + ([self.features(env) if self.features else env.task_features()] if cfg.obs_mode == "state" else [])
         if cfg.action_mode in ("abs", "rel"):
             parts.append(env_target_obs(env))
         self.hist_low.append(np.concatenate(parts))

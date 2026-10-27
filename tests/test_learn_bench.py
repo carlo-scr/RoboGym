@@ -136,3 +136,26 @@ def test_dry_real_backend(tmp_path):
     tr = replay_actions(env, acts, seed=1)
     div = divergence(tr, tr)
     assert summarize_divergence(div)["arm0_tcp_err_m"]["max"] == 0.0
+
+
+def test_bench_evaluate_actor_with_expert():
+    env = RoboGymEnv("cube_stack", render=False)
+    holder = {}
+
+    def reset_fn(e, spec):
+        holder["ex"] = e.task.make_expert(e, seed=spec.seed)
+
+    specs = bench.split_specs("cube_stack", "test", n=2, horizon=2) + bench.condition_specs("cube_stack", n=1, horizon=2, conditions={"slippery": {"pad_friction": 0.3}})
+    df = bench.evaluate_actor(env, lambda e: holder["ex"].act(), specs, reset_fn=reset_fn)
+    assert len(df) == 3 and set(df.tag) == {"test", "cond:slippery"}
+    summ = bench.summarize_eval(df)
+    assert "success" in summ.columns and summ.loc["test", "n"] == 2
+
+
+def test_safety_signals():
+    env = RoboGymEnv("cube_stack", render=False, bimanual=True)
+    env.reset(seed=1)
+    s = env.safety()
+    assert s["joint_limit_margin"] > 0 and 0 <= s["torque_sat"] <= 1 and s["arm_clearance"] > 0.01 and not s["would_collide"]
+    ep = run_episode(env, EpisodeSpec(seed=1, variant={"n": 2}), cameras=[], save_states=False, max_s=2.0)
+    assert "safety_arm_clearance" in ep["extra_cols"] and len(ep["data"]["safety_tcp_speed"]) == ep["annotations"]["n_steps"]

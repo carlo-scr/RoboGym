@@ -5,15 +5,36 @@ written in shards as they arrive so a killed run can resume. Workers use one BLA
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import multiprocessing
 import os
 import pickle
+import tempfile
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 _ENVS: dict = {}
+
+
+@contextlib.contextmanager
+def _init_lock(render: bool):
+    """Serialise render-context creation across worker processes. On macOS two processes creating their
+    GL contexts at the same moment can deadlock inside Apple's shader cache (a file lock in CoreFSCache
+    that is never released), which stalls the whole pool; creating them one at a time avoids the race."""
+    if not render or os.name != "posix":
+        yield
+        return
+    import fcntl
+
+    with open(Path(tempfile.gettempdir()) / "robogym_env_init.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _init_worker():
@@ -31,7 +52,8 @@ def _env_for(cfg_dict: dict, render: bool):
     key = (json.dumps(cfg_dict, sort_keys=True, default=str), render)
     if key not in _ENVS:
         _ENVS.clear()  # one env per worker is plenty; avoid leaking GL contexts
-        _ENVS[key] = RoboGymEnv(EnvCfg.from_dict(cfg_dict), render=render)
+        with _init_lock(render):
+            _ENVS[key] = RoboGymEnv(EnvCfg.from_dict(cfg_dict), render=render)
     return _ENVS[key]
 
 
@@ -45,10 +67,12 @@ def _run(fn, cfg_dict, render, job):
         return dict(ok=False, job=job, error=f"{type(e).__name__}: {e}", trace=traceback.format_exc())
 
 
-def run_jobs(fn, jobs, cfg, out_dir=None, workers=None, render=True, budget_s=None, flush_every=20, log=print, job_key=lambda j: str(j)):
+def run_jobs(fn, jobs, cfg, out_dir=None, workers=None, render=True, budget_s=None, flush_every=20, log=print, job_key=lambda j: str(j), start_method=None):
     """Run fn(env, job) for every job across `workers` processes. Results are returned as a list of dicts
     (ok, job, result | error) and, if out_dir is given, appended to shard_*.pkl files; already finished
-    jobs (by `job_key`) are skipped on resume. `budget_s` stops submitting new jobs after the budget."""
+    jobs (by `job_key`) are skipped on resume. `budget_s` stops submitting new jobs after the budget.
+    `start_method` ("spawn" | "fork" | "forkserver"; default: ROBOGYM_MP_START or the platform default):
+    use "spawn" when the workers run policies on CUDA, which cannot be used from a forked process."""
     cfg_dict = cfg.to_dict()
     done_keys = set()
     out = []
@@ -74,7 +98,9 @@ def run_jobs(fn, jobs, cfg, out_dir=None, workers=None, render=True, budget_s=No
             shard_i += 1
             buf = []
 
-    with ProcessPoolExecutor(workers, initializer=_init_worker) as ex:
+    start_method = start_method or os.environ.get("ROBOGYM_MP_START") or None
+    ctx = multiprocessing.get_context(start_method) if start_method else None
+    with ProcessPoolExecutor(workers, initializer=_init_worker, mp_context=ctx) as ex:
         futs = {}
         it = iter(todo)
         # keep ~2 jobs per worker in flight so a time budget can stop submission

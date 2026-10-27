@@ -14,6 +14,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "src")
 BOOTSTRAP = os.path.join(HERE, "bootstrap_cell.py")
 
+# Notebooks derived from another source: the same cells with a different title cell and a code cell inserted
+# right after the bootstrap (typically preselecting a preset), so the pipeline is kept in one file.
+VARIANTS = {
+    "06_fast_a100": dict(
+        src="05_offtheshelf.py",
+        title=[
+            "# Fast A100 run: off-the-shelf policies in about an hour",
+            "Notebook 05 with the `fast` preset preselected: 300 demonstrations per task, ACT / Diffusion Policy / VQ-BeT for",
+            "6k steps at batch 64 with the three trainings sharing the GPU, GPU-side evaluation on 20 paired seeds per horizon,",
+            "two GIF seeds per policy. Rough A100 budget: demonstrations ~10 min, export ~5 min, training ~15 min per task,",
+            "evaluation ~5 min per task, GIFs ~5 min; all three tasks in about an hour. Resumable: rerun after an interruption",
+            "and finished stages are skipped. Numbers are indicative (short trainings); the `a100` preset in notebook 05 is the",
+            "full run. Add `smolvla` to `ROBOGYM_LEROBOT_POLICIES` in the cell below to fine-tune SmolVLA too (hub download).",
+        ],
+        preamble=[
+            "import os",
+            'os.environ.setdefault("ROBOGYM_PRESET", "fast")',
+            'os.environ.setdefault("ROBOGYM_BRANCH", "policies-benchmark")  # the branch with the policies / benchmark work; drop once merged into main',
+            '# os.environ["ROBOGYM_TASKS"] = "cube_stack"                     # one task first',
+            '# os.environ["ROBOGYM_LEROBOT_POLICIES"] = "act,diffusion,vqbet,smolvla"',
+            '# os.environ["ROBOGYM_PARALLEL_TRAIN"] = "9"                     # all tasks x policies at once (needs CPU for the loaders)',
+        ],
+    ),
+}
+
 
 def split_cells(text):
     cells, cur, kind = [], [], "code"
@@ -42,20 +67,50 @@ def trim(lines):
     return lines
 
 
-def build(src_path, out_path):
+def _cell(kind, lines):
+    src = [ln + "\n" for ln in lines]
+    src[-1] = src[-1].rstrip("\n")
+    cell = {"cell_type": kind, "metadata": {}, "source": src}
+    if kind == "code":
+        cell.update(outputs=[], execution_count=None)
+    return cell
+
+
+def _old_outputs(out_path):
+    """Outputs of the existing notebook keyed by code-cell source, so a rebuild keeps embedded outputs for unchanged cells."""
+    if not os.path.exists(out_path):
+        return {}
+    try:
+        old = json.load(open(out_path))
+    except (OSError, ValueError):
+        return {}
+    keep = {}
+    for c in old.get("cells", []):
+        if c.get("cell_type") == "code" and c.get("outputs"):
+            keep.setdefault("".join(c["source"]), []).append((c["outputs"], c.get("execution_count")))
+    return keep
+
+
+def build(src_path, out_path, title=None, preamble=None):
+    """title: markdown lines replacing the first markdown cell; preamble: code lines inserted after the bootstrap cell.
+    Embedded outputs of the existing notebook are carried over for code cells whose source did not change."""
     cells = []
+    old_outputs = _old_outputs(out_path)
     for kind, lines in split_cells(open(src_path).read()):
-        if kind == "code" and lines and lines[0].strip() == "# @bootstrap":
+        is_bootstrap = kind == "code" and lines and lines[0].strip() == "# @bootstrap"
+        if is_bootstrap:
             lines = open(BOOTSTRAP).read().split("\n")
         lines = trim(strip_md(lines) if kind == "markdown" else lines)
         if not lines:
             continue
-        src = [ln + "\n" for ln in lines]
-        src[-1] = src[-1].rstrip("\n")
-        cell = {"cell_type": kind, "metadata": {}, "source": src}
-        if kind == "code":
-            cell.update(outputs=[], execution_count=None)
-        cells.append(cell)
+        if title and kind == "markdown" and not any(c["cell_type"] == "markdown" for c in cells):
+            lines = list(title)
+        cells.append(_cell(kind, lines))
+        if is_bootstrap and preamble:
+            cells.append(_cell("code", list(preamble)))
+    for c in cells:
+        if c["cell_type"] == "code" and old_outputs.get("".join(c["source"])):
+            c["outputs"], c["execution_count"] = old_outputs["".join(c["source"])].pop(0)
     nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}, "language_info": {"name": "python"}},
           "nbformat": 4, "nbformat_minor": 5}
     json.dump(nb, open(out_path, "w"), indent=1)
@@ -89,6 +144,11 @@ def main():
             subprocess.run([sys.executable, "-m", "nbconvert", "--to", "notebook", "--execute", "--inplace", f"--ExecutePreprocessor.timeout={a.timeout}", out],
                            check=True, cwd=HERE, env=_kernel_env())
             print("executed", os.path.relpath(out))
+    for name, v in VARIANTS.items():
+        if a.only and a.only not in name:
+            continue
+        out = build(os.path.join(SRC, v["src"]), os.path.join(HERE, name + ".ipynb"), title=v.get("title"), preamble=v.get("preamble"))
+        print("built", os.path.relpath(out), "from", v["src"])
 
 
 if __name__ == "__main__":

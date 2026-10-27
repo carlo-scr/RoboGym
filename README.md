@@ -73,6 +73,10 @@ python scripts/generate_dataset.py --task lego --out data/lego_tta --stream mixe
 python scripts/benchmark_experts.py --tasks cube_stack lego cable_plug --n 40
 python scripts/render_gallery.py --out media --video
 python notebooks/build.py --execute             # 00_tour, 01_failures_shifts_regimes, 02_data_and_research_hooks
+ROBOGYM_PRESET=smoke python notebooks/src/04_benchmark.py   # or open notebooks/04_benchmark.ipynb on a Colab A100
+# Colab: the repo is private, so add a Colab secret GITHUB_TOKEN (fine-grained token with read access) before running a notebook
+pip install lerobot && python notebooks/src/05_offtheshelf.py   # LeRobot ACT / Diffusion / VQ-BeT (+ SmolVLA, pi0.5 on GPU), GIFs, figures
+# notebooks/06_fast_a100.ipynb: the same pipeline with the `fast` preset, first results on one A100 in about an hour
 ```
 
 Every modelling assumption that is not measured on the real cell (mounting, cameras, bench, object
@@ -100,6 +104,30 @@ or `RoboGymEnv(task, **dotted)` override it, e.g. `RoboGymEnv("lego", **{"task.s
 * **Real cell**: `robogym.real.RealXArmEnv` implements the same contract over the xArm SDK and
   RealSense (a dry backend runs without hardware), records episodes in the same layout, and
   `robogym.real.twin` measures sim-to-real divergence by replaying a recording. Untested on hardware.
+
+## Policies and the planning / execution split
+
+`robogym.policies` puts every controller behind one interface so the benchmark compares them the same
+way: the scripted expert (with actuation-noise and injected-failure knobs), learned chunk policies
+(Diffusion Policy, ACT, MLP; `scripts/train_policy.py --arch`), an adapter for LeRobot checkpoints, and
+`HierarchicalPolicy(planner, executor)`, where the *planner* (oracle, rule-based, deliberately corrupted,
+or an LLM reading a text scene description) and the *executor* (the expert's subgoal routines, with
+noise or injected failures, or a goal-conditioned learned skill) are swapped independently.
+`robogym.lh` evaluates any policy over horizons on paired seeds and attributes the first failure of an
+episode to planning (`plan`, `plan_goal`) or execution (`exec_grasp`, `exec_place`) from the simulator's
+labels alone, with horizon curves against the independent-subgoal prediction. `notebooks/04_benchmark`
+runs the whole pipeline per task (datasets, the three architectures, world model and monitor, the
+benchmark) and is safe to interrupt: every stage resumes from what is on disk. `notebooks/05_offtheshelf`
+exports the demonstrations to the LeRobot format, trains LeRobot's ACT, Diffusion Policy and VQ-BeT (and
+fine-tunes SmolVLA / pi0.5 on a GPU), benchmarks them next to the expert and the hierarchical policies, and
+renders captioned rollout GIFs and the summary figures; `notebooks/06_fast_a100` is the same notebook with a
+one-hour A100 preset (fewer demonstrations and steps, trainings sharing the GPU, GPU-side evaluation).
+
+```bash
+python scripts/eval_policies.py --task cube_stack --horizons 2 3 4 --n 20 --workers 8 --out runs/lh_cubes \
+  --policies expert "expert:exec_noise=0.004" "hier:oracle+scripted" "hier:corrupt(p_swap=0.5)+scripted" \
+  chunk:runs/dp_cubes/policy.pt "hier:oracle+chunk(runs/dp_cubes/policy.pt)" "hier:llm+scripted"
+```
 
 ## Expert success
 

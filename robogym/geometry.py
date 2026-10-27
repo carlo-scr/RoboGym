@@ -94,6 +94,27 @@ def slerp(q0, q1, t):
     return quat_mul(quat_from_rotvec(t * rv), q0)
 
 
+def level_quat(q):
+    """Nearest *level* orientation of a box-like object: the smallest rotation about a horizontal axis that
+    makes the body axis closest to world +z exactly vertical (yaw is preserved). For an upright cube this
+    is its yaw quaternion; for a cube handed over sideways it is the orientation it will rest in."""
+    q = np.asarray(q, float)
+    R = quat_to_mat(q)
+    i = int(np.argmax(np.abs(R[2])))
+    z_b = R[:, i] * np.sign(R[2, i])  # world direction of the body axis closest to up
+    axis = np.cross(z_b, [0.0, 0.0, 1.0])
+    s = np.linalg.norm(axis)
+    if s < 1e-9:
+        return q
+    return quat_mul(quat_from_axis_angle(axis / s, float(np.arctan2(s, z_b[2]))), q)
+
+
+def nearest_angle(cands, cur):
+    """The candidate angle closest to `cur` (mod 2 pi)."""
+    cands = np.asarray(cands, float)
+    return float(cands[np.argmin(np.abs(wrap(cands - cur)))])
+
+
 def pose_mul(p1, q1, p2, q2):
     """(p1,q1) * (p2,q2): compose transforms."""
     return p1 + quat_rotate(q1, p2), quat_mul(q1, q2)

@@ -46,11 +46,11 @@ print(PRESET, DEVICE, P)
 # %%
 train_dir, eval_dir = REPO / "data" / f"{TASK}_train_{PRESET}", REPO / "data" / f"{TASK}_eval_{PRESET}"
 GEN = str(REPO / "scripts" / "generate_dataset.py")
-if not (train_dir / "dataset.json").exists():
+if not list(train_dir.glob("index_*.parquet")):  # the index is written when generation finished (resumes otherwise)
     run_live([sys.executable, GEN, "--task", TASK, "--out", str(train_dir), "--n", str(P["n_train"]), "--seed0", str(bench.SPLITS["train"][0]),
               "--mix", "1,0,0,0", "--dart", "0.002", "--cameras", "right_wrist", "front", "--no-states", "--workers", str(P["workers"]),
               "--cfg", json.dumps({"camera.width": P["hw"][1], "camera.height": P["hw"][0]})], cwd=str(REPO))
-if not (eval_dir / "dataset.json").exists():
+if not list(eval_dir.glob("index_*.parquet")):
     run_live([sys.executable, GEN, "--task", TASK, "--out", str(eval_dir), "--n", str(P["n_eval"]), "--seed0", str(bench.SPLITS["cal"][0]),
               "--mix", "0.5,0.25,0.2,0.05", "--cameras", "right_wrist", "front", "--no-states", "--workers", str(P["workers"]),
               "--cfg", json.dumps({"camera.width": P["hw"][1], "camera.height": P["hw"][0]})], cwd=str(REPO))

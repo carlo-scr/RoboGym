@@ -27,7 +27,7 @@ from .failures import FailureSpec, all_failure_types, sample_failure
 from .scenario import Scenario, sample_scenario
 
 SIM_VERSION = "0.1.0"
-DART_PHASES = ("reach", "lift", "carry", "retreat", "home")  # free-space phases only
+DART_PHASES = ("reach", "lift", "carry", "retreat", "home", "ready", "stage")  # free-space phases only
 CATEGORIES = ("nominal", "known_failure", "ood", "regime_shift")
 
 
@@ -164,13 +164,17 @@ def run_episode(env: RoboGymEnv, spec: EpisodeSpec, cameras=None, save_states=Tr
         rec["regime_id"].append(env._sched_i)
         for k2, v in getattr(task, "record_columns", lambda e, p: {})(env, pr).items():
             extra.setdefault(k2, []).append(v)
+        for k2, v in env.safety().items():
+            extra.setdefault(f"safety_{k2}", []).append(float(v) if np.isfinite(v) else 9.9)
         stage_times.setdefault(info["stage_name"], round(env.time, 4))
         # which task object each expert arm holds (-1: none); drop = an arm loses an object while its
         # expert still intends to hold it (outside the release / retreat phases)
         gks = {a: -1 for a in ex_arms}
+        holders = pr.get("holders")
         for j, g in enumerate(pr["grasped"]):
-            if g in gks:
-                gks[g] = j
+            for a_ in (holders[j] if holders is not None else ([g] if g is not None else [])):
+                if a_ in gks:
+                    gks[a_] = j
         rec["grasped_k"].append(gks[ex_arms[0]])
         if len(ex_arms) > 1:
             extra.setdefault("grasped_k_left", []).append(gks[ex_arms[1]])
@@ -253,6 +257,8 @@ def _injection_time(ex, failure: FailureSpec | None):
         return None
     ev = {}
     for name, t in ex.events:
+        if name.split(":")[0] in ("right", "left"):  # bimanual experts prefix events with the arm
+            name = name.split(":", 1)[1]
         ev.setdefault(name, t)
     k = failure.kind
     if k in ("bump", "stall", "weak_grip", "misalign", "misplace", "wrong_slot", "wrong_cube", "wrong_port", "low_carry"):

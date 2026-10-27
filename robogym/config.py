@@ -151,6 +151,10 @@ class CubeStackCfg:
     friction: float = 0.8
     place_tol_xy: float = 0.012  # cube centre offset from the one below that still counts as stacked
     variant: str = "by_size"  # "by_size": largest at the bottom; "pattern": random order, shown as a ghost
+    # "stack" | "unstack" (start stacked, take down onto marked spots) | "relocate" (unstack, move the base,
+    # rebuild: 2n-1 moves) | "handover" (two arms: cubes out of the builder's reach, passed in mid-air).
+    # A scenario variant {"mode": ...} overrides it per episode.
+    mode: str = "stack"
     show_goal_ghost: bool = False
     spawn: tuple = (0.30, 0.62, -0.26, 0.26)  # x_min, x_max, y_min, y_max of the spawn area
     min_gap: float = 0.03  # between cubes at spawn
