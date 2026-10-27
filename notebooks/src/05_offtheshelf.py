@@ -22,15 +22,30 @@
 # @bootstrap
 
 # %%
-import importlib.util, subprocess, sys
+import importlib, importlib.metadata, subprocess, sys
 # lerobot 0.6 splits its dependencies into extras: the dataset module needs `datasets` and PyAV (`av`), the trainer
 # needs `accelerate`; a bare `pip install lerobot` leaves all three out (0.4 had them as core deps: the extras then
-# only produce a warning). Check the packages themselves, not just lerobot.
-_missing = [m for m in ("lerobot", "av", "datasets", "accelerate") if importlib.util.find_spec(m) is None]
+# only produce a warning). Check the way lerobot does (installed distribution + importable), not just lerobot itself.
+
+
+def _have(dist, module=None):
+    try:
+        importlib.metadata.version(dist)
+        importlib.import_module(module or dist)
+        return True
+    except Exception:  # noqa: BLE001  (PackageNotFoundError, ImportError, broken wheel)
+        return False
+
+
+_missing = [d for d in ("lerobot", "av", "datasets", "accelerate") if not _have(d)]
 if _missing:
     print("installing lerobot[dataset,training] (missing:", ", ".join(_missing), ") ...")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
     importlib.invalidate_caches()
+    for _m in [m for m in sys.modules if m.split(".")[0] in ("lerobot", "av", "datasets", "accelerate")]:
+        del sys.modules[_m]  # lerobot caches "package missing" verdicts; a fresh import re-checks
+    _still = [d for d in ("lerobot", "av", "datasets", "accelerate") if not _have(d)]
+    assert not _still, f"still not importable after install: {_still}; restart the runtime (Runtime > Restart session) and rerun"
 
 # %%
 import json, os, time
