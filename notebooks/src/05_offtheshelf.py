@@ -22,30 +22,30 @@
 # @bootstrap
 
 # %%
-import importlib, importlib.metadata, subprocess, sys
+import importlib, subprocess, sys
 # lerobot 0.6 splits its dependencies into extras: the dataset module needs `datasets` and PyAV (`av`), the trainer
-# needs `accelerate`; a bare `pip install lerobot` leaves all three out (0.4 had them as core deps: the extras then
-# only produce a warning). Check the way lerobot does (installed distribution + importable), not just lerobot itself.
+# needs `accelerate`; a bare `pip install lerobot` leaves them out (0.4 has them as core deps: the extras then only
+# produce a warning). Verified with the exact imports the pipeline needs. lerobot caches a "package missing"
+# verdict for the life of the kernel, so its modules are dropped first and the check re-imports them.
 
 
-def _have(dist, module=None):
+def _lerobot_ready():
+    for _m in [m for m in sys.modules if m.split(".")[0] == "lerobot"]:
+        del sys.modules[_m]
+    importlib.invalidate_caches()
     try:
-        importlib.metadata.version(dist)
-        importlib.import_module(module or dist)
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: F401  (needs datasets + av)
+        import accelerate  # noqa: F401  (the trainer)
         return True
-    except Exception:  # noqa: BLE001  (PackageNotFoundError, ImportError, broken wheel)
+    except ImportError as e:
+        print("lerobot not ready:", e)
         return False
 
 
-_missing = [d for d in ("lerobot", "av", "datasets", "accelerate") if not _have(d)]
-if _missing:
-    print("installing lerobot[dataset,training] (missing:", ", ".join(_missing), ") ...")
+if not _lerobot_ready():
+    print("installing lerobot[dataset,training] ...")
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
-    importlib.invalidate_caches()
-    for _m in [m for m in sys.modules if m.split(".")[0] in ("lerobot", "av", "datasets", "accelerate")]:
-        del sys.modules[_m]  # lerobot caches "package missing" verdicts; a fresh import re-checks
-    _still = [d for d in ("lerobot", "av", "datasets", "accelerate") if not _have(d)]
-    assert not _still, f"still not importable after install: {_still}; restart the runtime (Runtime > Restart session) and rerun"
+    assert _lerobot_ready(), "still failing after the install: Runtime > Restart session, then run again"
 
 # %%
 import json, os, time
