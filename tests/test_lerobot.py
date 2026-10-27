@@ -52,7 +52,8 @@ def test_export_train_run(tiny_root, tmp_path, ptype, variant):
 
 
 def test_train_many(tiny_root, tmp_path):
-    from robogym.learn.lerobot_io import checkpoint_step, export_lerobot, train_lerobot_many, train_log
+    from robogym.learn.lerobot_io import checkpoint_step, export_lerobot, train_lerobot, train_lerobot_many, train_log
+    from robogym.policies import LeRobotPolicy, make_policy
 
     info = export_lerobot(tiny_root, tmp_path / "lr_full", "test/robogym_full", variant="full", log=None)
     tiny = ["--policy.dim_model=64", "--policy.n_encoder_layers=1", "--policy.n_decoder_layers=1", "--policy.pretrained_backbone_weights=null"]
@@ -64,5 +65,18 @@ def test_train_many(tiny_root, tmp_path):
     assert all("step:" in train_log(tmp_path / f"act{i}").read_text() for i in range(2)) and any("trained (4 steps" in m for m in logs)
     assert train_lerobot_many(jobs, max_parallel=2, log=None) == {"act0": 0.0, "act1": 0.0}  # already done: returns at once
     bad = [dict(jobs[0], name="bad", policy_type="no_such_policy", out_dir=tmp_path / "bad")]
-    with pytest.raises(RuntimeError, match="bad"):
-        train_lerobot_many(bad, max_parallel=1, log=None)
+    with pytest.raises(RuntimeError, match="bad") as ei:
+        train_lerobot_many(bad, max_parallel=1, log=logs.append)
+    assert "end of the bad log" in str(ei.value) and any("[bad] FAILED" in m and "\n    | " in m for m in logs)  # the log tail is shown
+    # a run on local disk whose final checkpoint is published to out_dir (Colab: out_dir on Drive, which has no symlinks)
+    out, work = tmp_path / "pub", tmp_path / "work" / "pub"
+    job = dict(jobs[0], name="pub", out_dir=out, work_dir=work)
+    assert set(train_lerobot_many([job], max_parallel=1, log=None)) == {"pub"}
+    last = out / "checkpoints" / "last"
+    assert checkpoint_step(out) == 4 and checkpoint_step(work) == 4 and not last.is_symlink() and (last / "pretrained_model" / "config.json").exists()
+    assert [q.name for q in (last / "training_state").iterdir()] == ["training_step.json"]  # no optimizer state in the published copy
+    assert train_log(out).read_text().startswith("$ ") and "step:" in train_log(out).read_text()  # the log is copied beside out_dir
+    kw = {k: v for k, v in job.items() if k != "name"}
+    assert train_lerobot(**kw, log=None) == last / "pretrained_model"  # published: returns at once
+    train_lerobot(**dict(kw, steps=6), log=None)  # resumes the local run 4 -> 6 and republishes
+    assert checkpoint_step(out) == 6 and checkpoint_step(work) == 6 and isinstance(make_policy(f"lerobot:{out}"), LeRobotPolicy)

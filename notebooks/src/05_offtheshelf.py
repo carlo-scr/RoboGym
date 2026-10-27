@@ -70,6 +70,24 @@ if not _lerobot_ready():
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset,training]", "av", "datasets", "accelerate"], check=True)
     assert _lerobot_ready(), "still failing after the install: restart the kernel, then run all"
 
+
+def _trainer_imports():
+    """The trainer's import chain (cv2, torchvision, av, accelerate, ...) in a fresh process, the way the training subprocesses run it;
+    the kernel-side dataset code imports less, so a broken module shows up only here."""
+    r = subprocess.run([sys.executable, "-c", "import lerobot.scripts.lerobot_train"], capture_output=True, text=True)
+    return r.returncode == 0, [ln for ln in r.stderr.strip().splitlines() if ln.strip()][-10:]
+
+
+_ok, _err = _trainer_imports()
+if not _ok and any("cv2" in ln for ln in _err):
+    # Colab ships opencv-python + opencv-contrib-python; lerobot adds opencv-python-headless and the mixed builds break `import cv2`
+    print("fixing the opencv install (mixed builds):", *_err[-2:], sep="\n  ")
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-q", "-y", "opencv-python", "opencv-contrib-python", "opencv-python-headless", "opencv-contrib-python-headless"], check=False)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "opencv-python-headless"], check=True)
+    _ok, _err = _trainer_imports()
+assert _ok, "the lerobot trainer does not import in a fresh process:\n" + "\n".join(_err)
+print("lerobot trainer imports OK")
+
 # %%
 import json, os, time
 from pathlib import Path
@@ -113,6 +131,7 @@ CAM_CFG = json.dumps({"camera.width": P["hw"][1], "camera.height": P["hw"][0]})
 OUT = Path(os.environ.get("ROBOGYM_OUT") or REPO / "runs" / f"offtheshelf_{PRESET}")
 OUT.mkdir(parents=True, exist_ok=True)
 LEROBOT_ROOT = Path("/content/lerobot_data") if IN_COLAB else REPO / "data" / "lerobot"  # many small files: keep off Drive
+WORK = Path("/content/lerobot_runs") if IN_COLAB else None  # trainings run here (local disk); the final checkpoint is copied to OUT (Drive has no symlinks)
 STATUS = OUT / "status.json"
 status = json.load(open(STATUS)) if STATUS.exists() else {}
 
@@ -138,7 +157,8 @@ def ckpt_dir(task, ptype):
     return OUT / task / ptype
 
 
-print(f"preset {PRESET} on {DEVICE}, tasks {TASKS}, policies {POLICIES}, stages {sorted(STAGES)}, {PARALLEL_TRAIN} concurrent trainings, out {OUT}, lerobot data {LEROBOT_ROOT}")
+print(f"preset {PRESET} on {DEVICE}, tasks {TASKS}, policies {POLICIES}, stages {sorted(STAGES)}, {PARALLEL_TRAIN} concurrent trainings, out {OUT}, lerobot data {LEROBOT_ROOT}"
+      + (f", training in {WORK}" if WORK else ""))
 
 # %% [markdown]
 # ## 1. Demonstrations (shared with notebook 04)
@@ -188,7 +208,8 @@ if "train" in STAGES:
                 print(f"[{task}/{ptype}] trained ({steps} steps)")
                 continue
             jobs.append(dict(name=f"{task}/{ptype}", policy_type=ptype, dataset_info=EXPORTS[(task, POLICY_VARIANT[ptype])], out_dir=ckpt_dir(task, ptype), steps=steps,
-                             batch_size=P["bs"][ptype], device=DEVICE, num_workers=max(1, min(4, CPU // PARALLEL_TRAIN)), extra=P["extra"].get(ptype, [])))
+                             batch_size=P["bs"][ptype], device=DEVICE, num_workers=max(1, min(4, CPU // PARALLEL_TRAIN)), extra=P["extra"].get(ptype, []),
+                             work_dir=WORK / task / ptype if WORK else None))
     if jobs:
         print(f"training {len(jobs)} policies, {PARALLEL_TRAIN} at a time: {[j['name'] for j in jobs]}")
         mins = train_lerobot_many(jobs, max_parallel=PARALLEL_TRAIN, poll_s=60)

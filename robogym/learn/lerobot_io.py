@@ -137,12 +137,31 @@ def _no_env_eval_flag() -> str:
     return "--env_eval_freq=0" if "env_eval_freq" in names else "--eval_freq=0"
 
 
+def publish_checkpoint(run_dir, out_dir) -> Path:
+    """Copy the final checkpoint of a run trained in `run_dir` to `out_dir`: the `pretrained_model` and the
+    step file, as a real `checkpoints/last` directory (lerobot's is a symlink, which Google Drive cannot
+    hold) and without the optimizer state (GBs that only a resume needs). Returns the pretrained_model dir."""
+    src = (Path(run_dir) / "checkpoints" / "last").resolve()
+    dst = Path(out_dir) / "checkpoints" / "last"
+    if dst.is_symlink():
+        dst.unlink()
+    elif dst.exists():
+        shutil.rmtree(dst)
+    (dst / "training_state").mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src / "pretrained_model", dst / "pretrained_model")
+    shutil.copy2(src / "training_state" / "training_step.json", dst / "training_state" / "training_step.json")
+    return dst / "pretrained_model"
+
+
 def train_lerobot(policy_type, dataset_info: dict, out_dir, steps, batch_size=8, device="cpu", save_freq=None, num_workers=2, log_freq=None, extra=(), pretrained=None,
-                  python=None, log=print, log_path=None):
+                  python=None, log=print, log_path=None, work_dir=None):
     """Run `lerobot-train` for `steps` (resumes from checkpoints/last if the run was interrupted; returns
     at once if the final checkpoint exists). `pretrained`: a hub id / path for fine-tuning (VLAs); else
     `--policy.type=<policy_type>` from scratch. `log_path`: send the trainer's output to that file instead
-    of the console (used when several trainings run at once). Returns the pretrained_model directory."""
+    of the console (used when several trainings run at once). `work_dir`: train there (a local disk) and
+    copy the final checkpoint to `out_dir` at the end: for an `out_dir` on a network drive, where lerobot's
+    `checkpoints/last` symlink and its GB-sized checkpoint writes fail or crawl (Google Drive on Colab).
+    Returns the pretrained_model directory under `out_dir`."""
     from ..tools import run_live
 
     out_dir = Path(out_dir).resolve()
@@ -150,26 +169,47 @@ def train_lerobot(policy_type, dataset_info: dict, out_dir, steps, batch_size=8,
     done = checkpoint_step(out_dir)
     if done is not None and done >= steps:
         return pretrained_dir(out_dir)
+    run_dir = Path(work_dir).resolve() if work_dir else out_dir
+    if work_dir:
+        done = checkpoint_step(run_dir)  # only the local run can be resumed (the published copy has no optimizer state)
     base = [python or sys.executable, "-m", "lerobot.scripts.lerobot_train"]
     if done is not None:
-        cmd = base + [f"--config_path={pretrained_dir(out_dir) / 'train_config.json'}", "--resume=true", f"--steps={steps}"]
+        cmd = base + [f"--config_path={pretrained_dir(run_dir) / 'train_config.json'}", "--resume=true", f"--steps={steps}"]
         if log:
             log(f"[lerobot train] resuming {policy_type} from step {done}/{steps}")
     else:
-        if out_dir.exists():
-            shutil.rmtree(out_dir)  # a run that died before its first checkpoint
+        if run_dir.exists():
+            shutil.rmtree(run_dir)  # a run that died before its first checkpoint
         pol = [f"--policy.path={pretrained or PRETRAINED[policy_type]}"] if (pretrained or policy_type in PRETRAINED) else [f"--policy.type={policy_type}"]
         cmd = base + [f"--dataset.repo_id={dataset_info['repo_id']}", f"--dataset.root={root}", *pol, f"--policy.device={device}", "--policy.push_to_hub=false",
-                      f"--output_dir={out_dir}", f"--steps={steps}", f"--batch_size={batch_size}", f"--save_freq={save_freq or max(50, steps // 10)}", _no_env_eval_flag(),
+                      f"--output_dir={run_dir}", f"--steps={steps}", f"--batch_size={batch_size}", f"--save_freq={save_freq or max(50, steps // 10)}", _no_env_eval_flag(),
                       f"--log_freq={log_freq or max(10, steps // 50)}", f"--num_workers={num_workers}", "--wandb.enable=false", *POLICY_ARGS.get(policy_type, []), *extra]
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    run_live(cmd, cwd=str(out_dir.parent), skip=("Warning", "warn"), sink=log_path)
-    done = checkpoint_step(out_dir)
+    run_dir.parent.mkdir(parents=True, exist_ok=True)
+    if log_path:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write("$ " + " ".join(map(str, cmd)) + "\n")
+    run_live(cmd, cwd=str(run_dir.parent), skip=("Warning", "warn"), sink=log_path)
+    done = checkpoint_step(run_dir)
     if done is None or done < steps:
         raise RuntimeError(f"lerobot training of {policy_type} ended at step {done} < {steps}")
-    prune_checkpoints(out_dir, keep=1)
-    json.dump(dict(policy_type=policy_type, steps=steps, dataset=dataset_info, cmd=[str(c) for c in cmd]), open(out_dir / SIDECAR, "w"), indent=1)
+    prune_checkpoints(run_dir, keep=1)
+    if work_dir:
+        publish_checkpoint(run_dir, out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json.dump(dict(policy_type=policy_type, steps=steps, dataset=dataset_info, cmd=[str(c) for c in cmd], run_dir=str(run_dir)), open(out_dir / SIDECAR, "w"), indent=1)
     return pretrained_dir(out_dir)
+
+
+def log_tail(log_path, n=12) -> str:
+    """The last `n` meaningful lines of a training log (no blank lines, progress bars or the command header)."""
+    try:
+        text = Path(log_path).read_text(errors="replace")
+    except OSError:
+        return ""
+    lines = [ln.rstrip() for ln in text.replace("\r", "\n").splitlines()]
+    lines = [ln for ln in lines if ln.strip() and "it/s" not in ln and "%|" not in ln and not ln.startswith("$ ")]
+    return "\n".join(lines[-n:])
 
 
 def _progress(log_path) -> str:
@@ -193,21 +233,32 @@ def train_log(out_dir) -> Path:
 def train_lerobot_many(jobs, max_parallel=1, poll_s=60, log=print):
     """Run several `train_lerobot` calls, up to `max_parallel` at a time (each is its own subprocess, so
     small policies can share one GPU). `jobs`: dicts of train_lerobot keyword arguments plus a `name`;
-    each trainer's output goes to <out_dir>.train.log (beside the run directory, which lerobot insists on
-    creating itself) and one progress line per running job is printed every `poll_s` seconds. Already
-    finished runs return at once; older numbered checkpoints are pruned as the runs go (the newest two,
-    then only the last). Returns {name: minutes}; after all jobs ended, raises RuntimeError listing the
-    failed ones (the log tail is in each .train.log)."""
+    each trainer's output goes to <run dir>.train.log (beside the run directory, which lerobot insists on
+    creating itself; copied beside `out_dir` at the end when a `work_dir` is used) and one progress line
+    per running job is printed every `poll_s` seconds. Already finished runs return at once; older
+    numbered checkpoints are pruned as the runs go (the newest two, then only the last). Returns
+    {name: minutes}; after all jobs ended, raises RuntimeError listing the failed ones with the tail of
+    the first failed log (each failure's tail is also printed through `log` as it happens)."""
     from concurrent.futures import ThreadPoolExecutor, wait
+
+    def run_dir(kw):
+        return kw.get("work_dir") or kw["out_dir"]
 
     def one(kw):
         kw = dict(kw)
         name = kw.pop("name")
         t0 = time.time()
-        train_lerobot(**kw, log=None, log_path=train_log(kw["out_dir"]))
+        lp = train_log(run_dir(kw))
+        try:
+            train_lerobot(**kw, log=None, log_path=lp)
+        finally:
+            if kw.get("work_dir") and Path(lp).exists():
+                final = train_log(kw["out_dir"])
+                final.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(lp, final)
         return name, (time.time() - t0) / 60
 
-    mins, errors = {}, {}
+    mins, errors, tails = {}, {}, {}
     pending = {}
     with ThreadPoolExecutor(max(1, int(max_parallel))) as ex:
         for kw in jobs:
@@ -223,18 +274,23 @@ def train_lerobot_many(jobs, max_parallel=1, poll_s=60, log=print):
                     if log:
                         log(f"[{name}] trained ({kw['steps']} steps, {m:.1f} min)")
                 except Exception as e:  # noqa: BLE001
-                    errors[kw["name"]] = f"{type(e).__name__}: {str(e).splitlines()[0]}"
+                    name = kw["name"]
+                    errors[name] = f"{type(e).__name__}: {str(e).splitlines()[0]}"
+                    tails[name] = log_tail(train_log(run_dir(kw)))
                     if log:
-                        log(f"[{kw['name']}] FAILED: {errors[kw['name']]} (see {train_log(kw['out_dir'])})")
+                        shown = ("\n    | " + tails[name].replace("\n", "\n    | ")) if tails[name] else ""
+                        log(f"[{name}] FAILED: {errors[name]} (log: {train_log(kw['out_dir'])}){shown}")
             if pending and time.time() - t_log >= poll_s - 1:
                 running = [kw for f, kw in pending.items() if f.running()]
                 for kw in running[:max_parallel]:
-                    prune_checkpoints(kw["out_dir"], keep=2)  # keep the disk (or Drive) from filling with 1.5 GB checkpoints
+                    prune_checkpoints(run_dir(kw), keep=2)  # keep the disk (or Drive) from filling with 1.5 GB checkpoints
                     if log:
-                        log(f"  [{kw['name']}] {_progress(train_log(kw['out_dir'])) or 'starting'} / {kw['steps']} steps")
+                        log(f"  [{kw['name']}] {_progress(train_log(run_dir(kw))) or 'starting'} / {kw['steps']} steps")
                 t_log = time.time()
     if errors:
-        raise RuntimeError("lerobot training failed for " + ", ".join(f"{k} ({v})" for k, v in errors.items()))
+        first = next(iter(errors))
+        raise RuntimeError("lerobot training failed for " + ", ".join(f"{k} ({v})" for k, v in errors.items())
+                           + (f"\n--- end of the {first} log ---\n{tails[first]}" if tails.get(first) else ""))
     return mins
 
 
