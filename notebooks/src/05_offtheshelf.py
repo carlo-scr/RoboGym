@@ -23,9 +23,12 @@
 
 # %%
 import importlib.util, subprocess, sys
-if importlib.util.find_spec("lerobot") is None:
-    print("installing lerobot ...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot"], check=True)
+# lerobot plus its dataset extra: the dataset module needs PyAV (`av`) and `datasets`, which a bare `pip install lerobot` leaves out
+_missing = [m for m in ("lerobot", "av", "datasets") if importlib.util.find_spec(m) is None]
+if _missing:
+    print("installing lerobot[dataset] (missing:", ", ".join(_missing), ") ...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "lerobot[dataset]", "av", "datasets"], check=True)  # (older lerobot has no such extra: harmless warning)
+    importlib.invalidate_caches()
 
 # %%
 import json, os, time
