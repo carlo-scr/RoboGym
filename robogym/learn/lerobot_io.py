@@ -172,7 +172,7 @@ def train_lerobot(policy_type, dataset_info: dict, out_dir, steps, batch_size=8,
     run_dir = Path(work_dir).resolve() if work_dir else out_dir
     if work_dir:
         done = checkpoint_step(run_dir)  # only the local run can be resumed (the published copy has no optimizer state)
-    base = [python or sys.executable, "-m", "lerobot.scripts.lerobot_train"]
+    base = [python or sys.executable, str(Path(__file__).resolve().parent / "lerobot_fast.py")]  # lerobot-train + the fast window query (lerobot_fast.py)
     if done is not None:
         cmd = base + [f"--config_path={pretrained_dir(run_dir) / 'train_config.json'}", "--resume=true", f"--steps={steps}"]
         if log:

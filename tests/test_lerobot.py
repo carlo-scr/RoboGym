@@ -81,3 +81,34 @@ def test_train_many(tiny_root, tmp_path):
     assert train_lerobot(**kw, log=None) == last / "pretrained_model"  # published: returns at once
     train_lerobot(**dict(kw, steps=6), log=None)  # resumes the local run 4 -> 6 and republishes
     assert checkpoint_step(out) == 6 and checkpoint_step(work) == 6 and isinstance(make_policy(f"lerobot:{out}"), LeRobotPolicy)
+
+
+def test_fast_window_query(tiny_root, tmp_path):
+    """The window query patch returns exactly what lerobot's reader returns (skipped on lerobot <= 0.4, no reader)."""
+    import torch
+
+    from robogym.learn.lerobot_fast import patch_reader
+    from robogym.learn.lerobot_io import export_lerobot
+
+    pytest.importorskip("lerobot.datasets.dataset_reader")
+    from lerobot.datasets.dataset_reader import DatasetReader
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    info = export_lerobot(tiny_root, tmp_path / "lr_full", "test/robogym_full", variant="full", log=None)
+    dts = {"action": [i / 20 for i in range(32)], "observation.images.front": [-1 / 20, 0], "observation.state": [-1 / 20, 0]}
+    ds = LeRobotDataset(info["repo_id"], root=info["root"], delta_timestamps=dts)
+    orig_q, orig_t = DatasetReader._query_hf_dataset, DatasetReader._get_query_timestamps
+    idx = [0, 3, len(ds) - 1]
+    before = [ds[i] for i in idx]
+    try:
+        assert patch_reader() and patch_reader()  # idempotent
+        after = [ds[i] for i in idx]
+    finally:
+        DatasetReader._query_hf_dataset, DatasetReader._get_query_timestamps, DatasetReader._robogym_fast = orig_q, orig_t, False
+    for a, b in zip(before, after):
+        assert a.keys() == b.keys()
+        for k in a:
+            if torch.is_tensor(a[k]):
+                assert torch.equal(a[k], b[k]), k
+            else:
+                assert a[k] == b[k], k
